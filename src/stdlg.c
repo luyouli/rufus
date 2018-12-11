@@ -31,6 +31,7 @@
 #include <shlobj.h>
 #include <commdlg.h>
 #include <richedit.h>
+#include <assert.h>
 
 #include "rufus.h"
 #include "missing.h"
@@ -55,6 +56,7 @@ static WNDPROC pOrgBrowseWndproc;
 static const SETTEXTEX friggin_microsoft_unicode_amateurs = {ST_DEFAULT, CP_UTF8};
 static BOOL notification_is_question;
 static const notification_info* notification_more_info;
+static const char* notification_dont_display_setting;
 static WNDPROC update_original_proc = NULL;
 static HWINEVENTHOOK fp_weh = NULL;
 static char *fp_title_str = "Microsoft Windows", *fp_button_str = "Format disk";
@@ -156,7 +158,7 @@ void BrowseForFolder(void) {
 		pfod = NULL;	// Just in case
 		goto fallback;
 	}
-	hr = pfod->lpVtbl->SetOptions(pfod, FOS_PICKFOLDERS);
+	hr = IFileOpenDialog_SetOptions(pfod, FOS_PICKFOLDERS);
 	if (FAILED(hr)) {
 		uprintf("Failed to set folder option for FileOpenDialog: error %X\n", hr);
 		goto fallback;
@@ -178,19 +180,19 @@ void BrowseForFolder(void) {
 	hr = SHCreateItemFromParsingName(wpath, NULL, &IID_IShellItem, (LPVOID)&si_path);
 	if (SUCCEEDED(hr)) {
 		if (wpath != NULL) {
-			pfod->lpVtbl->SetFolder(pfod, si_path);
+			IFileOpenDialog_SetFolder(pfod, si_path);
 		}
 		if (fname != NULL) {
-			pfod->lpVtbl->SetFileName(pfod, fname);
+			IFileOpenDialog_SetFileName(pfod, fname);
 		}
 	}
 	safe_free(wpath);
 
-	hr = pfod->lpVtbl->Show(pfod, hMainDialog);
+	hr = IFileOpenDialog_Show(pfod, hMainDialog);
 	if (SUCCEEDED(hr)) {
-		hr = pfod->lpVtbl->GetResult(pfod, &psi);
+		hr = IFileOpenDialog_GetResult(pfod, &psi);
 		if (SUCCEEDED(hr)) {
-			psi->lpVtbl->GetDisplayName(psi, SIGDN_FILESYSPATH, &wpath);
+			IShellItem_GetDisplayName(psi, SIGDN_FILESYSPATH, &wpath);
 			tmp_path = wchar_to_utf8(wpath);
 			CoTaskMemFree(wpath);
 			if (tmp_path == NULL) {
@@ -207,12 +209,12 @@ void BrowseForFolder(void) {
 		uprintf("Could not show FileOpenDialog: error %X\n", hr);
 		goto fallback;
 	}
-	pfod->lpVtbl->Release(pfod);
+	IFileOpenDialog_Release(pfod);
 	dialog_showing--;
 	return;
 fallback:
 	if (pfod != NULL) {
-		pfod->lpVtbl->Release(pfod);
+		IFileOpenDialog_Release(pfod);
 	}
 
 	memset(&bi, 0, sizeof(BROWSEINFOW));
@@ -278,7 +280,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 		}
 
 		// Set the file extension filters
-		pfd->lpVtbl->SetFileTypes(pfd, (UINT)ext->count + 1, filter_spec);
+		IFileDialog_SetFileTypes(pfd, (UINT)ext->count + 1, filter_spec);
 
 		if (path == NULL) {
 			// Try to use the "Downloads" folder as the initial default directory
@@ -288,7 +290,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 			if (SUCCEEDED(hr)) {
 				hr = SHCreateItemFromParsingName(wpath, NULL, &IID_IShellItem, (LPVOID)&si_path);
 				if (SUCCEEDED(hr)) {
-					pfd->lpVtbl->SetDefaultFolder(pfd, si_path);
+					IFileDialog_SetDefaultFolder(pfd, si_path);
 				}
 				CoTaskMemFree(wpath);
 			}
@@ -296,7 +298,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 			wpath = utf8_to_wchar(path);
 			hr = SHCreateItemFromParsingName(wpath, NULL, &IID_IShellItem, (LPVOID)&si_path);
 			if (SUCCEEDED(hr)) {
-				pfd->lpVtbl->SetFolder(pfd, si_path);
+				IFileDialog_SetFolder(pfd, si_path);
 			}
 			safe_free(wpath);
 		}
@@ -304,11 +306,11 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 		// Set the default filename
 		wfilename = utf8_to_wchar((ext->filename == NULL) ? "" : ext->filename);
 		if (wfilename != NULL) {
-			pfd->lpVtbl->SetFileName(pfd, wfilename);
+			IFileDialog_SetFileName(pfd, wfilename);
 		}
 
 		// Display the dialog
-		hr = pfd->lpVtbl->Show(pfd, hMainDialog);
+		hr = IFileDialog_Show(pfd, hMainDialog);
 
 		// Cleanup
 		safe_free(wfilename);
@@ -321,9 +323,9 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 
 		if (SUCCEEDED(hr)) {
 			// Obtain the result of the user's interaction with the dialog.
-			hr = pfd->lpVtbl->GetResult(pfd, &psiResult);
+			hr = IFileDialog_GetResult(pfd, &psiResult);
 			if (SUCCEEDED(hr)) {
-				hr = psiResult->lpVtbl->GetDisplayName(psiResult, SIGDN_FILESYSPATH, &wpath);
+				hr = IShellItem_GetDisplayName(psiResult, SIGDN_FILESYSPATH, &wpath);
 				if (SUCCEEDED(hr)) {
 					filepath = wchar_to_utf8(wpath);
 					CoTaskMemFree(wpath);
@@ -331,7 +333,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 					SetLastError(hr);
 					uprintf("Unable to access file path: %s\n", WindowsErrorString());
 				}
-				psiResult->lpVtbl->Release(psiResult);
+				IShellItem_Release(psiResult);
 			}
 		} else if ((hr & 0xFFFF) != ERROR_CANCELLED) {
 			// If it's not a user cancel, assume the dialog didn't show and fallback
@@ -339,7 +341,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 			uprintf("Could not show FileOpenDialog: %s\n", WindowsErrorString());
 			goto fallback;
 		}
-		pfd->lpVtbl->Release(pfd);
+		IFileDialog_Release(pfd);
 		dialog_showing--;
 		return filepath;
 	}
@@ -347,7 +349,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options)
 fallback:
 	safe_free(filter_spec);
 	if (pfd != NULL) {
-		pfd->lpVtbl->Release(pfd);
+		IFileDialog_Release(pfd);
 	}
 
 	memset(&ofn, 0, sizeof(ofn));
@@ -659,11 +661,11 @@ INT_PTR CreateAboutBox(void)
 INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	LRESULT loc;
-	int i, dh;
+	int i, dh, cbh = 0;
 	// Prevent resizing
 	static LRESULT disabled[9] = { HTLEFT, HTRIGHT, HTTOP, HTBOTTOM, HTSIZE,
 		HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT };
-	static HBRUSH background_brush, separator_brush;
+	static HBRUSH background_brush, separator_brush, buttonface_brush;
 	// To use the system message font
 	NONCLIENTMETRICS ncm;
 	HFONT hDlgFont;
@@ -677,9 +679,9 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 		ncm.cbSize = sizeof(ncm);
 		// If we're compiling with the Vista SDK or later, the NONCLIENTMETRICS struct
 		// will be the wrong size for previous versions, so we need to adjust it.
-		#if defined(_MSC_VER) && (_MSC_VER >= 1500) && (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
+#if defined(_MSC_VER) && (_MSC_VER >= 1500) && (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
 		ncm.cbSize -= sizeof(ncm.iPaddedBorderWidth);
-		#endif
+#endif
 		SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
 		hDlgFont = CreateFontIndirect(&(ncm.lfMessageFont));
 		// Set the dialog to use the system message box font
@@ -697,6 +699,7 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 		apply_localization(IDD_NOTIFICATION, hDlg);
 		background_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
 		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
+		buttonface_brush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
 		SetTitleBarIcon(hDlg);
 		CenterDialog(hDlg);
 		// Change the default icon
@@ -712,6 +715,16 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 			SetWindowTextU(GetDlgItem(hDlg, IDNO), lmprintf(MSG_006));
 		} else {
 			ShowWindow(GetDlgItem(hDlg, IDYES), SW_SHOW);
+		}
+		hCtrl = GetDlgItem(hDlg, IDC_DONT_DISPLAY_AGAIN);
+		if (notification_dont_display_setting != NULL) {
+			SetWindowTextU(hCtrl, lmprintf(MSG_127));
+		} else {
+			// Remove the "Don't display again" checkbox
+			ShowWindow(hCtrl, SW_HIDE);
+			GetWindowRect(hCtrl, &rc);
+			MapWindowPoints(NULL, hDlg, (POINT*)&rc, 2);
+			cbh = rc.bottom - rc.top;
 		}
 		if ((notification_more_info != NULL) && (notification_more_info->callback != NULL)) {
 			hCtrl = GetDlgItem(hDlg, IDC_MORE_INFO);
@@ -731,17 +744,16 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 			GetWindowRect(hCtrl, &rc);
 			dh = rc.bottom - rc.top;
 			DrawTextU(hDC, szMessageText, -1, &rc, DT_CALCRECT | DT_WORDBREAK);
-			dh = rc.bottom - rc.top - dh + (int)(8.0f * fScale);
+			dh = max(rc.bottom - rc.top - dh + (int)(8.0f * fScale), 0);
 			safe_release_dc(hCtrl, hDC);
-			if (dh > 0) {
-				ResizeMoveCtrl(hDlg, hCtrl, 0, 0, 0, dh, 1.0f);
-				ResizeMoveCtrl(hDlg, hDlg, 0, 0, 0, dh, 1.0f);
-				ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, -1), 0, 0, 0, dh, 1.0f);	// IDC_STATIC = -1
-				ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDC_SELECTION_LINE), 0, dh, 0, 0, 1.0f);
-				ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDC_MORE_INFO), 0, dh, 0, 0, 1.0f);
-				ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDYES), 0, dh, 0, 0, 1.0f);
-				ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDNO), 0, dh, 0, 0, 1.0f);
-			}
+			ResizeMoveCtrl(hDlg, hCtrl, 0, 0, 0, dh, 1.0f);
+			ResizeMoveCtrl(hDlg, hDlg, 0, 0, 0, dh - cbh, 1.0f);
+			ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, -1), 0, 0, 0, dh, 1.0f);	// IDC_STATIC = -1
+			ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDC_SELECTION_LINE), 0, dh, 0, 0, 1.0f);
+			ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDC_DONT_DISPLAY_AGAIN), 0, dh, 0, 0, 1.0f);
+			ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDC_MORE_INFO), 0, dh - cbh, 0, 0, 1.0f);
+			ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDYES), 0, dh -cbh, 0, 0, 1.0f);
+			ResizeMoveCtrl(hDlg, GetDlgItem(hDlg, IDNO), 0, dh -cbh, 0, 0, 1.0f);
 		}
 		return (INT_PTR)TRUE;
 	case WM_CTLCOLORSTATIC:
@@ -749,6 +761,9 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 		SetBkMode((HDC)wParam, TRANSPARENT);
 		if ((HWND)lParam == GetDlgItem(hDlg, IDC_NOTIFICATION_LINE)) {
 			return (INT_PTR)separator_brush;
+		}
+		if ((HWND)lParam == GetDlgItem(hDlg, IDC_DONT_DISPLAY_AGAIN)) {
+			return (INT_PTR)buttonface_brush;
 		}
 		return (INT_PTR)background_brush;
 	case WM_NCHITTEST:
@@ -766,11 +781,20 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 		case IDCANCEL:
 		case IDYES:
 		case IDNO:
+			if (IsDlgButtonChecked(hDlg, IDC_DONT_DISPLAY_AGAIN) == BST_CHECKED) {
+				WriteSettingBool(SETTING_DISABLE_SECURE_BOOT_NOTICE, TRUE);
+			}
 			EndDialog(hDlg, LOWORD(wParam));
 			return (INT_PTR)TRUE;
 		case IDC_MORE_INFO:
-			if (notification_more_info != NULL)
-				MyDialogBox(hMainInstance, notification_more_info->id, hDlg, notification_more_info->callback);
+			assert(notification_more_info->callback != NULL);
+			if (notification_more_info != NULL) {
+				if (notification_more_info->id == MORE_INFO_URL) {
+					ShellExecuteA(hDlg, "open", notification_more_info->url, NULL, NULL, SW_SHOWNORMAL);
+				} else {
+					MyDialogBox(hMainInstance, notification_more_info->id, hDlg, notification_more_info->callback);
+				}
+			}
 			break;
 		}
 		break;
@@ -781,7 +805,7 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 /*
  * Display a custom notification
  */
-BOOL Notification(int type, const notification_info* more_info, char* title, char* format, ...)
+BOOL Notification(int type, const char* dont_display_setting, const notification_info* more_info,  char* title, char* format, ...)
 {
 	BOOL ret;
 	va_list args;
@@ -800,6 +824,7 @@ BOOL Notification(int type, const notification_info* more_info, char* title, cha
 	szMessageText[max_msg_size -1] = 0;
 	notification_more_info = more_info;
 	notification_is_question = FALSE;
+	notification_dont_display_setting = dont_display_setting;
 
 	switch(type) {
 	case MSG_WARNING_QUESTION:
@@ -1276,14 +1301,14 @@ BOOL SetTaskbarProgressState(TASKBAR_PROGRESS_FLAGS tbpFlags)
 {
 	if (ptbl == NULL)
 		return FALSE;
-	return !FAILED(ptbl->lpVtbl->SetProgressState(ptbl, hMainDialog, tbpFlags));
+	return !FAILED(ITaskbarList3_SetProgressState(ptbl, hMainDialog, tbpFlags));
 }
 
 BOOL SetTaskbarProgressValue(ULONGLONG ullCompleted, ULONGLONG ullTotal)
 {
 	if (ptbl == NULL)
 		return FALSE;
-	return !FAILED(ptbl->lpVtbl->SetProgressValue(ptbl, hMainDialog, ullCompleted, ullTotal));
+	return !FAILED(ITaskbarList3_SetProgressValue(ptbl, hMainDialog, ullCompleted, ullTotal));
 }
 
 static void Reposition(HWND hDlg, int id, int dx, int dw)
@@ -1478,7 +1503,6 @@ BOOL SetUpdateCheck(void)
 {
 	BOOL enable_updates;
 	uint64_t commcheck = GetTickCount64();
-	notification_info more_info = { IDD_UPDATE_POLICY, UpdateCallback };
 	char filename[MAX_PATH] = "", exename[] = APPLICATION_NAME ".exe";
 	size_t fn_len, exe_len;
 
@@ -1489,6 +1513,7 @@ BOOL SetUpdateCheck(void)
 
 	// If the update interval is not set, this is the first time we run so prompt the user
 	if (ReadSetting32(SETTING_UPDATE_INTERVAL) == 0) {
+		notification_info more_info;
 
 		// Add a hack for people who'd prefer the app not to prompt about update settings on first run.
 		// If the executable is called "rufus.exe", without version, we disable the prompt
@@ -1501,7 +1526,9 @@ BOOL SetUpdateCheck(void)
 			enable_updates = TRUE;
 		} else {
 #endif
-			enable_updates = Notification(MSG_QUESTION, &more_info, lmprintf(MSG_004), lmprintf(MSG_005));
+			more_info.id = IDD_UPDATE_POLICY;
+			more_info.callback = UpdateCallback;
+			enable_updates = Notification(MSG_QUESTION, NULL, &more_info, lmprintf(MSG_004), lmprintf(MSG_005));
 #if !defined(_DEBUG)
 		}
 #endif

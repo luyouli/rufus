@@ -35,7 +35,6 @@
 #include <dbt.h>
 #include <io.h>
 #include <getopt.h>
-#undef NDEBUG
 #include <assert.h>
 
 #include "rufus.h"
@@ -104,7 +103,8 @@ BOOL iso_op_in_progress = FALSE, format_op_in_progress = FALSE, right_to_left_mo
 BOOL enable_HDDs = FALSE, force_update = FALSE, enable_ntfs_compression = FALSE, no_confirmation_on_cancel = FALSE, lock_drive = TRUE;
 BOOL advanced_mode_device, advanced_mode_format, allow_dual_uefi_bios, detect_fakes, enable_vmdk, force_large_fat32, usb_debug;
 BOOL use_fake_units, preserve_timestamps = FALSE, fast_zeroing = FALSE, app_changed_size = FALSE;
-BOOL zero_drive = FALSE, list_non_usb_removable_drives = FALSE, enable_file_indexing, large_drive = FALSE, write_as_image = FALSE;
+BOOL zero_drive = FALSE, list_non_usb_removable_drives = FALSE, enable_file_indexing, large_drive = FALSE;
+BOOL write_as_image = FALSE, installed_uefi_ntfs;
 uint64_t persistence_size = 0;
 float fScale = 1.0f;
 int dialog_showing = 0, selection_default = BT_IMAGE, windows_to_go_selection = 0, persistence_unit_selection = -1;
@@ -1839,7 +1839,7 @@ static BOOL CheckDriveAccess(DWORD dwTimeOut)
 		message = GetMuiString("shell32.dll", 28701);	// "This drive is in use (...) Do you want to format it anyway?"
 		if (message != NULL) {
 			ComboBox_GetTextU(hDeviceList, title, sizeof(title));
-			proceed = Notification(MSG_WARNING_QUESTION, NULL, title, message);
+			proceed = Notification(MSG_WARNING_QUESTION, NULL, NULL, title, message);
 			free(message);
 		}
 	}
@@ -1884,7 +1884,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	case WM_COMMAND:
 #ifdef RUFUS_TEST
 		if (LOWORD(wParam) == IDC_TEST) {
-			uprintf("CPU ARCH: %d", GetCpuArch());
+			DeletePartitions((DWORD)ComboBox_GetItemData(hDeviceList, ComboBox_GetCurSel(hDeviceList)));
 			break;
 		}
 #endif
@@ -2206,6 +2206,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			tt = (int)ComboBox_GetItemData(hTargetSystem, ComboBox_GetCurSel(hTargetSystem));
 			fs = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
 			write_as_image = FALSE;
+			installed_uefi_ntfs = FALSE;
 			// Disable all controls except Cancel
 			EnableControls(FALSE);
 			FormatStatus = 0;
@@ -2512,7 +2513,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		break;
 
 	case UM_NO_UPDATE:
-		Notification(MSG_INFO, NULL, lmprintf(MSG_243), lmprintf(MSG_247));
+		Notification(MSG_INFO, NULL, NULL, lmprintf(MSG_243), lmprintf(MSG_247));
 		// Need to manually set focus back to "Check Now" for tabbing to work
 		SendMessage(hUpdatesDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hUpdatesDlg, IDC_CHECK_NOW), TRUE);
 		break;
@@ -2617,11 +2618,17 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			PrintInfo(0, MSG_210);
 			MessageBeep(MB_OK);
 			FlashTaskbar(dialog_handle);
+			if (installed_uefi_ntfs && (!ReadSettingBool(SETTING_DISABLE_SECURE_BOOT_NOTICE))) {
+				notification_info more_info;
+				more_info.id = MORE_INFO_URL;
+				more_info.url = SECURE_BOOT_MORE_INFO_URL;
+				Notification(MSG_INFO, SETTING_DISABLE_SECURE_BOOT_NOTICE, &more_info, lmprintf(MSG_128), lmprintf(MSG_129));
+			}
 		} else if (SCODE_CODE(FormatStatus) == ERROR_CANCELLED) {
 			SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_PAUSED, 0);
 			SetTaskbarProgressState(TASKBAR_PAUSED);
 			PrintInfo(0, MSG_211);
-			Notification(MSG_INFO, NULL, lmprintf(MSG_211), lmprintf(MSG_041));
+			Notification(MSG_INFO, NULL, NULL, lmprintf(MSG_211), lmprintf(MSG_041));
 		} else {
 			SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_ERROR, 0);
 			SetTaskbarProgressState(TASKBAR_ERROR);
@@ -2660,7 +2667,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 						break;
 					}
 				}
-				Notification(MSG_ERROR, NULL, lmprintf(MSG_042), lmprintf(MSG_043, StrError(FormatStatus, FALSE)));
+				Notification(MSG_ERROR, NULL, NULL, lmprintf(MSG_042), lmprintf(MSG_043, StrError(FormatStatus, FALSE)));
 			}
 		}
 		FormatStatus = 0;
@@ -2694,7 +2701,7 @@ static void PrintUsage(char* appname)
 	printf("     This usage guide.\n");
 }
 
-static HANDLE SetHogger(BOOL attached_console, BOOL disable_hogger)
+static HANDLE SetHogger(void)
 {
 	INPUT* input;
 	BYTE* hog_data;
@@ -2702,12 +2709,9 @@ static HANDLE SetHogger(BOOL attached_console, BOOL disable_hogger)
 	HANDLE hogmutex = NULL, hFile = NULL;
 	int i;
 
-	if (!attached_console)
-		return NULL;
-
 	hog_data = GetResource(hMainInstance, MAKEINTRESOURCEA(IDR_XT_HOGGER),
 		_RT_RCDATA, cmdline_hogger, &hog_size, FALSE);
-	if ((hog_data != NULL) && (!disable_hogger)) {
+	if (hog_data != NULL) {
 		// Create our synchronisation mutex
 		hogmutex = CreateMutexA(NULL, TRUE, "Global/Rufus_CmdLine");
 
@@ -2806,15 +2810,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	uprintf("*** " APPLICATION_NAME " init ***\n");
 
-	// Reattach the console, if we were started from commandline
-	if (AttachConsole(ATTACH_PARENT_PROCESS) != 0) {
-		attached_console = TRUE;
-		IGNORE_RETVAL(freopen("CONIN$", "r", stdin));
-		IGNORE_RETVAL(freopen("CONOUT$", "w", stdout));
-		IGNORE_RETVAL(freopen("CONOUT$", "w", stderr));
-		_flushall();
-	}
-
 	// We have to process the arguments before we acquire the lock and process the locale
 	PF_INIT(__wgetmainargs, Msvcrt);
 	if (pf__wgetmainargs != NULL) {
@@ -2843,7 +2838,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				ini_flags[0] = 'a';
 
 			// Now enable the hogger before processing the rest of the arguments
-			hogmutex = SetHogger(attached_console, disable_hogger);
+			if (!disable_hogger) {
+				// Reattach the console, if we were started from commandline
+				if (AttachConsole(ATTACH_PARENT_PROCESS) != 0) {
+					attached_console = TRUE;
+					IGNORE_RETVAL(freopen("CONIN$", "r", stdin));
+					IGNORE_RETVAL(freopen("CONOUT$", "w", stdout));
+					IGNORE_RETVAL(freopen("CONOUT$", "w", stderr));
+					_flushall();
+					hogmutex = SetHogger();
+				}
+			}
 
 			while ((opt = getopt_long(argc, argv, "?xghf:i:w:l:", long_options, &option_index)) != EOF) {
 				switch (opt) {

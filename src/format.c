@@ -31,7 +31,6 @@
 #include <stddef.h>
 #include <ctype.h>
 #include <locale.h>
-#undef NDEBUG
 #include <assert.h>
 
 #include "rufus.h"
@@ -1761,13 +1760,13 @@ DWORD WINAPI FormatThread(void* param)
 		extra_partitions = XP_COMPAT;
 
 	PrintInfoDebug(0, MSG_225);
-	hPhysicalDrive = GetPhysicalHandle(DriveIndex, lock_drive, TRUE, !lock_drive);
+	hPhysicalDrive = GetPhysicalHandle(DriveIndex, lock_drive, FALSE, !lock_drive);
 	if (hPhysicalDrive == INVALID_HANDLE_VALUE) {
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_OPEN_FAILED;
 		goto out;
 	}
 
-	// At this stage we should have both a handle and a lock to the physical drive...
+	// At this stage we have both a handle and a lock to the physical drive
 	if (!GetDriveLetters(DriveIndex, drive_letters)) {
 		uprintf("Failed to get a drive letter\n");
 		FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_CANT_ASSIGN_LETTER);
@@ -1784,7 +1783,7 @@ DWORD WINAPI FormatThread(void* param)
 	} else {
 		// Unmount all mounted volumes that belong to this drive
 		// Do it in reverse so that we always end on the first volume letter
-		for (i=(int)safe_strlen(drive_letters); i>0; i--) {
+		for (i = (int)safe_strlen(drive_letters); i > 0; i--) {
 			drive_name[0] = drive_letters[i-1];
 			if (bt == BT_IMAGE) {
 				// If we are using an image, check that it isn't located on the drive we are trying to format
@@ -1802,7 +1801,20 @@ DWORD WINAPI FormatThread(void* param)
 	}
 	uprintf("Will use '%c:' as volume mountpoint\n", drive_name[0]);
 
-	// ...but we need a lock to the logical drive to be able to write anything to it
+	// It kind of blows, but we have to relinquish access to the physical drive
+	// for VDS to be able to delete the partitions that reside on it...
+	safe_unlockclose(hPhysicalDrive);
+	PrintInfoDebug(0, MSG_239);
+	DeletePartitions(DriveIndex);
+
+	// Now get RW access to the physical drive...
+	hPhysicalDrive = GetPhysicalHandle(DriveIndex, lock_drive, TRUE, !lock_drive);
+	if (hPhysicalDrive == INVALID_HANDLE_VALUE) {
+		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | ERROR_OPEN_FAILED;
+		goto out;
+	}
+
+	// ...and get a lock to the logical drive so that we can actually write something
 	hLogicalVolume = GetLogicalHandle(DriveIndex, TRUE, FALSE, !lock_drive);
 	if (hLogicalVolume == INVALID_HANDLE_VALUE) {
 		uprintf("Could not lock volume\n");
@@ -1819,9 +1831,6 @@ DWORD WINAPI FormatThread(void* param)
 	if (!zero_drive && !write_as_image) {
 		PrintInfoDebug(0, MSG_226);
 		AnalyzeMBR(hPhysicalDrive, "Drive", FALSE);
-		if ((hLogicalVolume != NULL) && (hLogicalVolume != INVALID_HANDLE_VALUE)) {
-			AnalyzePBR(hLogicalVolume);
-		}
 		UpdateProgress(OP_ANALYZE_MBR, -1.0f);
 	}
 
@@ -1830,7 +1839,7 @@ DWORD WINAPI FormatThread(void* param)
 		goto out;
 	}
 
-	// Zap any existing partitions. This helps prevent access errors.
+	// Zap partition records. This helps prevent access errors.
 	// Note, Microsoft's way of cleaning partitions (IOCTL_DISK_CREATE_DISK, which is what we apply
 	// in InitializeDisk) is *NOT ENOUGH* to reset a disk and can render it inoperable for partitioning
 	// or formatting under Windows. See https://github.com/pbatard/rufus/issues/759 for details.
