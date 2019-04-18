@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Device detection and enumeration
- * Copyright © 2014-2018 Pete Batard <pete@akeo.ie>
+ * Copyright © 2014-2019 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -310,9 +310,9 @@ BOOL GetOpticalMedia(IMG_SAVE* img_save)
 /* For debugging user reports of HDDs vs UFDs */
 //#define FORCED_DEVICE
 #ifdef FORCED_DEVICE
-#define FORCED_VID 0x067B
-#define FORCED_PID 0x2731
-#define FORCED_NAME "SD Card Reader USB Device"
+#define FORCED_VID 0x05AC
+#define FORCED_PID 0x8406
+#define FORCED_NAME "APPLE SD Card Reader USB Device"
 #endif
 
 /*
@@ -340,7 +340,7 @@ BOOL GetDevices(DWORD devnum)
 		// See http://itdoc.hitachi.co.jp/manuals/3021/30213B5200e/DMDS0094.HTM
 		// Also  http://www.carrona.org/dvrref.php. NB: These should be reported
 		// as enumerators by Rufus when Enum Debug is enabled
-		"SD", "PCISTOR", "RTSOR", "JMCR", "JMCF", "RIMMPTSK", "RIMSPTSK", "RIXDPTSK",
+		"SD", "PCISTOR", "RTSOR", "JMCR", "JMCF", "RIMMPTSK", "RIMSPTSK", "RISD", "RIXDPTSK",
 		"TI21SONY", "ESD7SK", "ESM7SK", "O2MD", "O2SD", "VIACR"
 	};
 	// Oh, and we also have card devices (e.g. 'SCSI\DiskO2Micro_SD_...') under the SCSI enumerator...

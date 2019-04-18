@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * UI-related function calls
- * Copyright © 2018 Pete Batard <pete@akeo.ie>
+ * Copyright © 2018-2019 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -43,6 +43,7 @@
 
 UINT_PTR UM_LANGUAGE_MENU_MAX = UM_LANGUAGE_MENU;
 HIMAGELIST hUpImageList, hDownImageList;
+extern BOOL enable_fido;
 int advanced_device_section_height, advanced_format_section_height;
 // (empty) check box width, (empty) drop down width, button height (for and without dropdown match)
 int cbw, ddw, ddbh = 0, bh = 0;
@@ -68,14 +69,17 @@ static float previous_end;
 // Set the combo selection according to the data
 void SetComboEntry(HWND hDlg, int data)
 {
-	int i;
-	for (i = 0; i < ComboBox_GetCount(hDlg); i++) {
+	int i, nb_entries = ComboBox_GetCount(hDlg);
+
+	if (nb_entries <= 0)
+		return;
+	for (i = 0; i < nb_entries; i++) {
 		if (ComboBox_GetItemData(hDlg, i) == data) {
 			IGNORE_RETVAL(ComboBox_SetCurSel(hDlg, i));
-			break;
+			return;
 		}
 	}
-	if (i == ComboBox_GetCount(hDlg))
+	if (i == nb_entries)
 		IGNORE_RETVAL(ComboBox_SetCurSel(hDlg, 0));
 }
 
@@ -144,15 +148,28 @@ void GetMainButtonsWidth(HWND hDlg)
 {
 	unsigned int i;
 	RECT rc;
+	LONG style;
+	char download[64];
 
 	GetWindowRect(GetDlgItem(hDlg, main_button_ids[0]), &rc);
 	MapWindowPoints(NULL, hDlg, (POINT*)&rc, 2);
 	bw = rc.right - rc.left;
 
-	for (i = 0; i < ARRAYSIZE(main_button_ids); i++)
-		bw = max(bw, GetTextWidth(hDlg, main_button_ids[i]) + cbw);
-	// The 'CLOSE' button is also be used to display 'CANCEL' => measure that too
+	for (i = 0; i < ARRAYSIZE(main_button_ids); i++) {
+		// Make sure we add extra space for the SELECT split button (i == 0) if Fido is enabled
+		bw = max(bw, GetTextWidth(hDlg, main_button_ids[i]) + ((enable_fido && i == 0) ? (3 * cbw) / 2 : cbw));
+	}
+	// The 'CLOSE' button is also be used to display 'CANCEL' and we sometimes
+	// want to add "DOWNLOAD" into the Select split button => measure that too.
 	bw = max(bw, GetTextSize(GetDlgItem(hDlg, IDCANCEL), lmprintf(MSG_007)).cx + cbw);
+	if (enable_fido) {
+		static_strcpy(download, lmprintf(MSG_040));
+		CharUpperBuffU(download, sizeof(download));
+		bw = max(bw, GetTextSize(GetDlgItem(hDlg, IDC_SELECT), download).cx + (3 * cbw) / 2);
+		style = GetWindowLong(GetDlgItem(hDlg, IDC_SELECT), GWL_STYLE);
+		style|= BS_SPLITBUTTON;
+		SetWindowLong(GetDlgItem(hDlg, IDC_SELECT), GWL_STYLE, style);
+	}
 }
 
 // The following goes over the data that gets populated into the half-width dropdowns
@@ -738,8 +755,8 @@ void ToggleImageOptions(void)
 	uint8_t entry_image_options = image_options;
 	int i, shift = rh;
 
-	has_wintogo = ((bt == BT_IMAGE) && (image_path != NULL) && (img_report.is_iso) && (nWindowsVersion >= WINDOWS_8) && (HAS_WINTOGO(img_report)));
-	has_persistence = ((bt == BT_IMAGE) && (image_path != NULL) && (img_report.is_iso) && (HAS_PERSISTENCE(img_report)));
+	has_wintogo = ((boot_type == BT_IMAGE) && (image_path != NULL) && (img_report.is_iso) && (nWindowsVersion >= WINDOWS_8) && (HAS_WINTOGO(img_report)));
+	has_persistence = ((boot_type == BT_IMAGE) && (image_path != NULL) && (img_report.is_iso) && (HAS_PERSISTENCE(img_report)));
 
 	assert(popcnt8(image_options) <= 1);
 
@@ -1128,7 +1145,7 @@ void InitProgress(BOOL bOnlyFormat)
 		if (IsChecked(IDC_BAD_BLOCKS)) {
 			nb_slots[OP_BADBLOCKS] = -1;
 		}
-		if (bt != BT_NON_BOOTABLE) {
+		if (boot_type != BT_NON_BOOTABLE) {
 			// 1 extra slot for PBR writing
 			switch (selection_default) {
 			case BT_MSDOS:
@@ -1154,10 +1171,10 @@ void InitProgress(BOOL bOnlyFormat)
 			nb_slots[OP_CREATE_FS] =
 				nb_steps[ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem))];
 			if ((!IsChecked(IDC_QUICK_FORMAT))
-				|| ((fs == FS_FAT32) && ((SelectedDrive.DiskSize >= LARGE_FAT32_SIZE) || (force_large_fat32)))) {
+				|| ((fs_type == FS_FAT32) && ((SelectedDrive.DiskSize >= LARGE_FAT32_SIZE) || (force_large_fat32)))) {
 				nb_slots[OP_FORMAT] = -1;
 			}
-			nb_slots[OP_FINALIZE] = ((selection_default == BT_IMAGE) && (fs == FS_NTFS)) ? 3 : 2;
+			nb_slots[OP_FINALIZE] = ((selection_default == BT_IMAGE) && (fs_type == FS_NTFS)) ? 3 : 2;
 		}
 	}
 

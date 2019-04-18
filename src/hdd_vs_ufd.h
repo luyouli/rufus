@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * SMART HDD vs Flash detection - isHDD() tables
- * Copyright © 2013-2014 Pete Batard <pete@akeo.ie>
+ * Copyright © 2013-2019 Pete Batard <pete@akeo.ie>
  *
  * Based in part on drivedb.h from Smartmontools:
  * http://svn.code.sf.net/p/smartmontools/code/trunk/smartmontools/drivedb.h
@@ -252,11 +252,21 @@ static vidpid_score_t vidpid_score[] = {
 	{ 0x059f, 0x1027, -20 },	// 16 GB UFD
 	{ 0x059f, 0x103B, -20 },	// 16 GB UFD
 	{ 0x059f, 0x1064, -20 },	// 16 GB UFD
+	// Apple exceptions
+	{ 0x05ac, 0x8400, -20},
+	{ 0x05ac, 0x8401, -20},
+	{ 0x05ac, 0x8402, -20},
+	{ 0x05ac, 0x8403, -20},
+	{ 0x05ac, 0x8404, -20},
+	{ 0x05ac, 0x8405, -20},
+	{ 0x05ac, 0x8406, -20},
+	{ 0x05ac, 0x8407, -20},
 	// Prolific exceptions
 	{ 0x067b, 0x2506, -20 },	// 8 GB Micro Hard Drive
 	{ 0x067b, 0x2517, -20 },	// 1 GB UFD
 	{ 0x067b, 0x2528, -20 },	// 8 GB UFD
 	{ 0x067b, 0x2731, -20 },	// SD/TF Card Reader
+	{ 0x067b, 0x2733, -20 },	// EAGET Mass Storage USB Device
 	{ 0x067b, 0x3400, -10 },	// Hi-Speed Flash Disk with TruePrint AES3400
 	{ 0x067b, 0x3500, -10 },	// Hi-Speed Flash Disk with TruePrint AES3500
 	// Freecom exceptions

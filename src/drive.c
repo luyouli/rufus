@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Drive access function calls
- * Copyright © 2011-2018 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2019 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -57,6 +57,10 @@ const GUID PARTITION_MSFT_RESERVED_GUID =
 const GUID PARTITION_SYSTEM_GUID =
 	{ 0xc12a7328L, 0xf81f, 0x11d2, {0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b} };
 #endif
+#if !defined(PARTITION_LINUX_HOME_GUID)
+const GUID PARTITION_LINUX_HOME_GUID =
+	{ 0x933ac7e1l, 0x2eb4, 0x4f13, {0xb8, 0x44, 0x0e, 0x14, 0xe2, 0xae, 0xf9, 0x15 } };
+#endif
 
 #if defined(__MINGW32__)
 const IID CLSID_VdsLoader = { 0x9c38ed61, 0xd565, 0x4728, { 0xae, 0xee, 0xc8, 0x09, 0x52, 0xf0, 0xec, 0xde } };
@@ -75,6 +79,7 @@ PF_TYPE_DECL(NTAPI, NTSTATUS, NtQueryVolumeInformationFile, (HANDLE, PIO_STATUS_
  */
 RUFUS_DRIVE_INFO SelectedDrive;
 BOOL installed_uefi_ntfs;
+uint64_t persistence_size = 0;
 const char* sfd_name = "Super Floppy Disk";
 
 /*
@@ -172,7 +177,7 @@ static HANDLE GetHandle(char* Path, BOOL bLockDrive, BOOL bWriteAccess, BOOL bWr
 			bWriteShare = TRUE;
 			// Try to report the process that is locking the drive
 			// We also use bit 6 as a flag to indicate that SearchProcess was called.
-			access_mask = SearchProcess(DevPath, 5000, TRUE, TRUE, FALSE) | 0x40;
+			access_mask = SearchProcess(DevPath, SEARCH_PROCESS_TIMEOUT, TRUE, TRUE, FALSE) | 0x40;
 		}
 		Sleep(DRIVE_ACCESS_TIMEOUT / DRIVE_ACCESS_RETRIES);
 	}
@@ -202,7 +207,7 @@ static HANDLE GetHandle(char* Path, BOOL bLockDrive, BOOL bWriteAccess, BOOL bWr
 		uprintf("Could not lock access to %s: %s", Path, WindowsErrorString());
 		// See if we can report the processes are accessing the drive
 		if (!IS_ERROR(FormatStatus) && (access_mask == 0))
-			access_mask = SearchProcess(DevPath, 5000, TRUE, TRUE, FALSE);
+			access_mask = SearchProcess(DevPath, SEARCH_PROCESS_TIMEOUT, TRUE, TRUE, FALSE);
 		// Try to continue if the only access rights we saw were for read-only
 		if ((access_mask & 0x07) != 0x01)
 			safe_closehandle(hDrive);
@@ -226,6 +231,23 @@ char* GetPhysicalName(DWORD DriveIndex)
 	success = TRUE;
 out:
 	return (success)?safe_strdup(physical_name):NULL;
+}
+
+/*
+ * Return the path to access a partition on a specific disk, or NULL on error.
+ * The string is allocated and must be freed (to ensure concurrent access)
+ */
+char* GetPartitionName(DWORD DriveIndex, DWORD PartitionNumber)
+{
+	BOOL success = FALSE;
+	char partition_name[32];
+
+	CheckDriveIndex(DriveIndex);
+	
+	static_sprintf(partition_name, "\\Device\\Harddisk%lu\\Partition%lu", DriveIndex, PartitionNumber);
+	success = TRUE;
+out:
+	return (success) ? safe_strdup(partition_name) : NULL;
 }
 
 /*
@@ -926,7 +948,7 @@ BOOL GetDrivePartitionData(DWORD DriveIndex, char* FileSystemName, DWORD FileSys
 	BYTE geometry[256] = {0}, layout[4096] = {0}, part_type;
 	PDISK_GEOMETRY_EX DiskGeometry = (PDISK_GEOMETRY_EX)(void*)geometry;
 	PDRIVE_LAYOUT_INFORMATION_EX DriveLayout = (PDRIVE_LAYOUT_INFORMATION_EX)(void*)layout;
-	char *volume_name, *buf, tmp[256];
+	char *volume_name, *buf;
 
 	if (FileSystemName == NULL)
 		return FALSE;
@@ -1046,11 +1068,9 @@ BOOL GetDrivePartitionData(DWORD DriveIndex, char* FileSystemName, DWORD FileSys
 			DriveLayout->Gpt.MaxPartitionCount, DriveLayout->Gpt.StartingUsableOffset.QuadPart, DriveLayout->Gpt.UsableLength.QuadPart);
 		for (i=0; i<DriveLayout->PartitionCount; i++) {
 			SelectedDrive.nPartitions++;
-			tmp[0] = 0;
-			wchar_to_utf8_no_alloc(DriveLayout->PartitionEntry[i].Gpt.Name, tmp, sizeof(tmp));
-			isUefiNtfs = (strcmp(tmp, "UEFI:NTFS") == 0);
-			suprintf("Partition %d%s:\r\n  Type: %s\r\n  Name: '%s'", i+1, isUefiNtfs ? " (UEFI:NTFS)" : "",
-				GuidToString(&DriveLayout->PartitionEntry[i].Gpt.PartitionType), tmp);
+			isUefiNtfs = (wcscmp(DriveLayout->PartitionEntry[i].Gpt.Name, L"UEFI:NTFS") == 0);
+			suprintf("Partition %d%s:\r\n  Type: %s\r\n  Name: '%S'", i+1, isUefiNtfs ? " (UEFI:NTFS)" : "",
+				GuidToString(&DriveLayout->PartitionEntry[i].Gpt.PartitionType), DriveLayout->PartitionEntry[i].Gpt.Name);
 			suprintf("  ID: %s\r\n  Size: %s (%" PRIi64 " bytes)\r\n  Start Sector: %" PRIi64 ", Attributes: 0x%016" PRIX64,
 				GuidToString(&DriveLayout->PartitionEntry[i].Gpt.PartitionId),
 				SizeToHumanReadable(DriveLayout->PartitionEntry[i].PartitionLength.QuadPart, TRUE, FALSE),
@@ -1121,47 +1141,53 @@ BOOL UnmountVolume(HANDLE hDrive)
 }
 
 /*
- * Mount the volume identified by drive_guid to mountpoint drive_name
+ * Mount the volume identified by drive_guid to mountpoint drive_name.
+ * If drive_guid is already mounted, but with a different letter than the
+ * one requested, drive_name is updated to use that letter.
  */
 BOOL MountVolume(char* drive_name, char *drive_guid)
 {
-	char mounted_guid[52];	// You need at least 51 characters on XP
-	char mounted_letter[16] = {0};
+	char mounted_guid[52];
+	char mounted_letter[27] = { 0 };
 	DWORD size;
 
 	if (drive_name[0] == '?')
 		return FALSE;
 
-	// For fixed disks, Windows may already have remounted the volume, but with a different letter
-	// than the one we want. If that's the case, we need to unmount first.
+	// Windows may already have the volume mounted but under a different letter.
+	// If that is the case, update drive_name to that letter.
 	if ( (GetVolumePathNamesForVolumeNameA(drive_guid, mounted_letter, sizeof(mounted_letter), &size))
 	  && (size > 1) && (mounted_letter[0] != drive_name[0]) ) {
-		uprintf("Volume is already mounted, but as %c: instead of %c: - Unmounting...", mounted_letter[0], drive_name[0]);
-		if (!DeleteVolumeMountPointA(mounted_letter))
-			uprintf("Failed to unmount volume: %s", WindowsErrorString());
-		// Also delete the destination mountpoint if needed (Don't care about errors)
-		DeleteVolumeMountPointA(drive_name);
-		Sleep(200);
+		uprintf("%s is already mounted as %C: instead of %C: - Will now use this target instead...", mounted_letter[0], drive_name[0]);
+		drive_name[0] = mounted_letter[0];
+		return TRUE;
 	}
 
 	if (!SetVolumeMountPointA(drive_name, drive_guid)) {
-		// If the OS was faster than us at remounting the drive, this operation can fail
-		// with ERROR_DIR_NOT_EMPTY. If that's the case, just check that mountpoints match
 		if (GetLastError() == ERROR_DIR_NOT_EMPTY) {
 			if (!GetVolumeNameForVolumeMountPointA(drive_name, mounted_guid, sizeof(mounted_guid))) {
-				uprintf("%s already mounted, but volume GUID could not be checked: %s",
+				uprintf("%s is already mounted, but volume GUID could not be checked: %s",
 					drive_name, WindowsErrorString());
-				return FALSE;
-			}
-			if (safe_strcmp(drive_guid, mounted_guid) != 0) {
-				uprintf("%s already mounted, but volume GUID doesn't match:\r\n  expected %s, got %s",
+			} else if (safe_strcmp(drive_guid, mounted_guid) != 0) {
+				uprintf("%s is mounted, but volume GUID doesn't match:\r\n  expected %s, got %s",
 					drive_name, drive_guid, mounted_guid);
-				return FALSE;
+			} else {
+				uprintf("%s is already mounted as %C:", drive_guid, drive_name[0]);
+				return TRUE;
 			}
-			uprintf("%s was already mounted as %s", drive_guid, drive_name);
-		} else {
-			return FALSE;
+			uprintf("Retrying after dismount...");
+			if (!DeleteVolumeMountPointA(drive_name))
+				uprintf("Warning: Could not delete volume mountpoint: %s", WindowsErrorString());
+			if (SetVolumeMountPointA(drive_name, drive_guid))
+				return TRUE;
+			if ((GetLastError() == ERROR_DIR_NOT_EMPTY) &&
+				GetVolumeNameForVolumeMountPointA(drive_name, mounted_guid, sizeof(mounted_guid)) &&
+				(safe_strcmp(drive_guid, mounted_guid) == 0)) {
+				uprintf("%s was remounted as %C: (second time lucky!)", drive_guid, drive_name[0]);
+				return TRUE;
+			}
 		}
+		return FALSE;
 	}
 	return TRUE;
 }
@@ -1265,7 +1291,8 @@ BOOL AltUnmountVolume(const char* drive_name)
 }
 
 /*
- * Issue a complete remount of the volume
+ * Issue a complete remount of the volume.
+ * Note that drive_name *may* be altered when the volume gets remounted.
  */
 BOOL RemountVolume(char* drive_name)
 {
@@ -1277,15 +1304,15 @@ BOOL RemountVolume(char* drive_name)
 		if (DeleteVolumeMountPointA(drive_name)) {
 			Sleep(200);
 			if (MountVolume(drive_name, drive_guid)) {
-				uprintf("Successfully remounted %s on %C:", drive_guid, drive_name[0]);
+				uprintf("Successfully remounted %s as %C:", drive_guid, drive_name[0]);
 			} else {
-				uprintf("Failed to remount %s on %C:", drive_guid, drive_name[0]);
+				uprintf("Failed to remount %s as %C:", drive_guid, drive_name[0]);
 				// This will leave the drive inaccessible and must be flagged as an error
 				FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_CANT_REMOUNT_VOLUME);
 				return FALSE;
 			}
 		} else {
-			uprintf("Could not remount %C: %s", drive_name[0], WindowsErrorString());
+			uprintf("Could not remount %s as %C: %s", drive_guid, drive_name[0], WindowsErrorString());
 			// Try to continue regardless
 		}
 	}
@@ -1389,10 +1416,14 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 			else
 				ms_efi_size = 1200*MB;	// That'll teach you to have a nonstandard disk!
 			extra_part_size_in_tracks = (ms_efi_size + bytes_per_track - 1) / bytes_per_track;
-		} else if (extra_partitions & XP_UEFI_NTFS)
+		} else if (extra_partitions & XP_UEFI_NTFS) {
 			extra_part_size_in_tracks = (max(MIN_EXTRA_PART_SIZE, uefi_ntfs_size) + bytes_per_track - 1) / bytes_per_track;
-		else if (extra_partitions & XP_COMPAT)
+		} else if (extra_partitions & XP_COMPAT) {
 			extra_part_size_in_tracks = 1;	// One track for the extra partition
+		} else if ((extra_partitions & XP_CASPER)) {
+			assert(persistence_size != 0);
+			extra_part_size_in_tracks = persistence_size / bytes_per_track;
+		}
 		uprintf("Reserved %" PRIi64" tracks (%s) for extra partition", extra_part_size_in_tracks,
 			SizeToHumanReadable(extra_part_size_in_tracks * bytes_per_track, TRUE, FALSE));
 		main_part_size_in_sectors = ((main_part_size_in_sectors / SelectedDrive.SectorsPerTrack) -
@@ -1402,7 +1433,7 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 	}
 	DriveLayoutEx.PartitionEntry[pn].PartitionLength.QuadPart = main_part_size_in_sectors * SelectedDrive.SectorSize;
 	if (partition_style == PARTITION_STYLE_MBR) {
-		DriveLayoutEx.PartitionEntry[pn].Mbr.BootIndicator = (bt != BT_NON_BOOTABLE);
+		DriveLayoutEx.PartitionEntry[pn].Mbr.BootIndicator = (boot_type != BT_NON_BOOTABLE);
 		switch (file_system) {
 		case FS_FAT16:
 			DriveLayoutEx.PartitionEntry[pn].Mbr.PartitionType = 0x0e;	// FAT16 LBA
@@ -1435,15 +1466,37 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 		DriveLayoutEx.PartitionEntry[pn].PartitionLength.QuadPart = (extra_partitions & XP_UEFI_NTFS)?uefi_ntfs_size:
 			extra_part_size_in_tracks * SelectedDrive.SectorsPerTrack * SelectedDrive.SectorSize;
 		if (partition_style == PARTITION_STYLE_GPT) {
-			DriveLayoutEx.PartitionEntry[pn].Gpt.PartitionType = (extra_partitions & XP_UEFI_NTFS)?
-				PARTITION_BASIC_DATA_GUID:PARTITION_SYSTEM_GUID;
+			const wchar_t* name = L"Basic Data";
+			const GUID* guid = &PARTITION_BASIC_DATA_GUID;
+			if (extra_partitions & XP_MSR) {
+				guid = &PARTITION_SYSTEM_GUID;
+				name = L"EFI system partition";
+			} else if (extra_partitions & XP_CASPER) {
+				// TODO: We may also want to use PARTITION_LINUX_HOME_GUID as fallback
+				// to automout as /home in case casper-rw fails.
+				name = L"casper-rw";	// Just in case
+			} else if (extra_partitions & XP_UEFI_NTFS) {
+				name = L"UEFI:NTFS";
+			} else {
+				assert(FALSE);
+			}
+			DriveLayoutEx.PartitionEntry[pn].Gpt.PartitionType = *guid;
 			IGNORE_RETVAL(CoCreateGuid(&DriveLayoutEx.PartitionEntry[pn].Gpt.PartitionId));
-			wcscpy(DriveLayoutEx.PartitionEntry[pn].Gpt.Name, (extra_partitions & XP_UEFI_NTFS)?L"UEFI:NTFS":L"EFI system partition");
+			wcscpy(DriveLayoutEx.PartitionEntry[pn].Gpt.Name, name);
 		} else {
-			DriveLayoutEx.PartitionEntry[pn].Mbr.PartitionType = (extra_partitions & XP_UEFI_NTFS)?0xef:RUFUS_EXTRA_PARTITION_TYPE;
-			if (extra_partitions & XP_COMPAT)
+			BYTE type = 0;
+			if (extra_partitions & XP_UEFI_NTFS) {
+				type = 0xef;
+			} else if (extra_partitions & XP_CASPER) {
+				type = 0x83;
+			}  else if (extra_partitions & XP_COMPAT) {
+				type = RUFUS_EXTRA_PARTITION_TYPE;
 				// Set the one track compatibility partition to be all hidden sectors
 				DriveLayoutEx.PartitionEntry[pn].Mbr.HiddenSectors = SelectedDrive.SectorsPerTrack;
+			} else {
+				assert(FALSE);
+			}
+			DriveLayoutEx.PartitionEntry[pn].Mbr.PartitionType = type;
 		}
 
 		// We need to write the UEFI:NTFS partition before we refresh the disk

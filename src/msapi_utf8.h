@@ -1,9 +1,9 @@
 /*
  * MSAPI_UTF8: Common API calls using UTF-8 strings
  * Compensating for what Microsoft should have done a long long time ago.
- * Also see http://utf8everywhere.org/
+ * Also see https://utf8everywhere.org
  *
- * Copyright © 2010-2017 Pete Batard <pete@akeo.ie>
+ * Copyright © 2010-2019 Pete Batard <pete@akeo.ie>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -452,7 +452,7 @@ static __inline DWORD CharUpperBuffU(char* lpString, DWORD len)
 
 static __inline HANDLE CreateFileU(const char* lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
 								   LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
-								   DWORD dwFlagsAndAttributes,  HANDLE hTemplateFile)
+								   DWORD dwFlagsAndAttributes, HANDLE hTemplateFile)
 {
 	HANDLE ret = INVALID_HANDLE_VALUE;
 	DWORD err = ERROR_INVALID_DATA;
@@ -461,6 +461,18 @@ static __inline HANDLE CreateFileU(const char* lpFileName, DWORD dwDesiredAccess
 		dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
 	err = GetLastError();
 	wfree(lpFileName);
+	SetLastError(err);
+	return ret;
+}
+
+static __inline BOOL CreateDirectoryU(const char* lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes)
+{
+	BOOL ret = FALSE;
+	DWORD err = ERROR_INVALID_DATA;
+	wconvert(lpPathName);
+	ret = CreateDirectoryW(wlpPathName, lpSecurityAttributes);
+	err = GetLastError();
+	wfree(lpPathName);
 	SetLastError(err);
 	return ret;
 }
@@ -687,6 +699,23 @@ static __inline DWORD GetFileAttributesU(const char* lpFileName)
 		ret = GetFileAttributesW(&wlpFileName[1]);
 	} else {
 		ret = GetFileAttributesW(wlpFileName);
+	}
+	err = GetLastError();
+	wfree(lpFileName);
+	SetLastError(err);
+	return ret;
+}
+
+static __inline BOOL SetFileAttributesU(const char* lpFileName, DWORD dwFileAttributes)
+{
+	BOOL ret = FALSE, err = ERROR_INVALID_DATA;
+	wconvert(lpFileName);
+	// Unlike Microsoft's version, ours doesn't fail if the string is quoted
+	if ((wlpFileName[0] == L'"') && (wlpFileName[wcslen(wlpFileName) - 1] == L'"')) {
+		wlpFileName[wcslen(wlpFileName) - 1] = 0;
+		ret = SetFileAttributesW(&wlpFileName[1], dwFileAttributes);
+	} else {
+		ret = SetFileAttributesW(wlpFileName, dwFileAttributes);
 	}
 	err = GetLastError();
 	wfree(lpFileName);
@@ -982,15 +1011,6 @@ static __inline int _openU(const char *filename, int oflag , int pmode)
 	return ret;
 }
 #endif
-
-static __inline int _unlinkU(const char *path)
-{
-	int ret;
-	wconvert(path);
-	ret = _wunlink(wpath);
-	wfree(path);
-	return ret;
-}
 
 static __inline int _stat64U(const char *path, struct __stat64 *buffer)
 {

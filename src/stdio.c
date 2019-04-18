@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard User I/O Routines (logging, status, etc.)
- * Copyright © 2011-2017 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2019 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <ctype.h>
 #include <math.h>
 
@@ -41,7 +42,6 @@ HWND hStatus;
 size_t ubuffer_pos = 0;
 char ubuffer[UBUFFER_SIZE];	// Buffer for ubpushf() messages we don't log right away
 
-#ifdef RUFUS_LOGGING
 void _uprintf(const char *format, ...)
 {
 	static char buf[4096];
@@ -77,7 +77,19 @@ void _uprintf(const char *format, ...)
 	}
 	free(wbuf);
 }
-#endif
+
+void _uprintfs(const char* str)
+{
+	wchar_t* wstr;
+	wstr = utf8_to_wchar(str);
+	OutputDebugStringW(wstr);
+	if ((hLog != NULL) && (hLog != INVALID_HANDLE_VALUE)) {
+		Edit_SetSel(hLog, MAX_LOG_SIZE, MAX_LOG_SIZE);
+		Edit_ReplaceSel(hLog, wstr);
+		Edit_Scroll(hLog, Edit_GetLineCount(hLog), 0);
+	}
+	free(wstr);
+}
 
 // Prints a bitstring of a number of any size, with or without leading zeroes.
 // See also the printbits() and printbitslz() helper macros in rufus.h
@@ -144,17 +156,18 @@ void DumpBufferHex(void *buf, size_t size)
 // Convert a windows error to human readable string
 const char *WindowsErrorString(void)
 {
-static char err_string[256] = {0};
+	static char err_string[256] = { 0 };
 
-	DWORD size;
+	DWORD size, presize;
 	DWORD error_code, format_error;
 
 	error_code = GetLastError();
 
 	static_sprintf(err_string, "[0x%08lX] ", error_code);
+	presize = (DWORD)strlen(err_string);
 
 	size = FormatMessageU(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS, NULL, HRESULT_CODE(error_code),
-		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), &err_string[strlen(err_string)],
+		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), &err_string[presize],
 		sizeof(err_string)-(DWORD)strlen(err_string), NULL);
 	if (size == 0) {
 		format_error = GetLastError();
@@ -163,6 +176,13 @@ static char err_string[256] = {0};
 				error_code, format_error);
 		else
 			static_sprintf(err_string, "Unknown error 0x%08lX", error_code);
+	} else {
+		// Microsoft may suffix CRLF to error messages, which we need to remove...
+		assert(presize > 2);
+		size += presize - 2;
+		// Cannot underflow if the above assert passed since our first char is neither of the following
+		while ((err_string[size] == 0x0D) || (err_string[size] == 0x0A) || (err_string[size] == 0x20))
+			err_string[size--] = 0;
 	}
 
 	SetLastError(error_code);	// Make sure we don't change the errorcode on exit
@@ -198,7 +218,7 @@ char* SizeToHumanReadable(uint64_t size, BOOL copy_to_log, BOOL fake_units)
 {
 	int suffix;
 	static char str_size[32];
-	const char* dir = ((right_to_left_mode)&&(!copy_to_log))?RIGHT_TO_LEFT_MARK:"";
+	const char* dir = ((right_to_left_mode) && (!copy_to_log)) ? LEFT_TO_RIGHT_MARK : "";
 	double hr_size = (double)size;
 	double t;
 	uint16_t i_size;
@@ -345,7 +365,7 @@ BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWr
 	// Need to get the current file pointer in case we need to retry
 	readFilePointer = SetFilePointerEx(hFile, liZero, &liFilePointer, FILE_CURRENT);
 	if (!readFilePointer)
-		uprintf("Warning: Could not read file pointer: %s", WindowsErrorString());
+		uprintf("Warning: Could not read file pointer %s", WindowsErrorString());
 
 	if (nNumRetries == 0)
 		nNumRetries = 1;
@@ -356,6 +376,7 @@ BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWr
 			break;
 		}
 		if (WriteFile(hFile, lpBuffer, nNumberOfBytesToWrite, lpNumberOfBytesWritten, NULL)) {
+			LastWriteError = 0;
 			if (nNumberOfBytesToWrite == *lpNumberOfBytesWritten)
 				return TRUE;
 			// Some large drives return 0, even though all the data was written - See github #787 */
@@ -365,14 +386,16 @@ BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWr
 			}
 			uprintf("Wrote %d bytes but requested %d", *lpNumberOfBytesWritten, nNumberOfBytesToWrite);
 		} else {
-			uprintf("Write error [0x%08X]", GetLastError());
+			uprintf("Write error %s", WindowsErrorString());
+			LastWriteError = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|GetLastError();
 		}
 		// If we can't reposition for the next run, just abort
 		if (!readFilePointer)
 			break;
 		if (nTry < nNumRetries) {
 			uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
-			Sleep(WRITE_TIMEOUT);
+			// Don't sit idly but use the downtime to check for conflicting processes...
+			Sleep(CheckDriveAccess(WRITE_TIMEOUT, FALSE));
 		}
 	}
 	if (SCODE_CODE(GetLastError()) == ERROR_SUCCESS)

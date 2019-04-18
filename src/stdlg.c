@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard Dialog Routines (Browse for folder, About, etc)
- * Copyright © 2011-2018 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2019 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -45,21 +45,23 @@
 #include "license.h"
 
 /* Globals */
+extern BOOL is_x86_32, enable_fido;
 static HICON hMessageIcon = (HICON)INVALID_HANDLE_VALUE;
 static char* szMessageText = NULL;
 static char* szMessageTitle = NULL;
 static char **szDialogItem;
 static int nDialogItems;
-static HWND hBrowseEdit;
-extern HWND hUpdatesDlg;
+static HWND hBrowseEdit, hUpdatesDlg;
 static WNDPROC pOrgBrowseWndproc;
 static const SETTEXTEX friggin_microsoft_unicode_amateurs = {ST_DEFAULT, CP_UTF8};
 static BOOL notification_is_question;
 static const notification_info* notification_more_info;
 static const char* notification_dont_display_setting;
 static WNDPROC update_original_proc = NULL;
-static HWINEVENTHOOK fp_weh = NULL;
-static char *fp_title_str = "Microsoft Windows", *fp_button_str = "Format disk";
+static HWINEVENTHOOK ap_weh = NULL;
+static char title_str[3][128], button_str[128];
+HWND hFidoDlg = NULL;
+BOOL close_fido_cookie_prompts = FALSE;
 
 static int update_settings_reposition_ids[] = {
 	IDC_POLICY,
@@ -439,16 +441,16 @@ void CreateStatusBar(void)
 
 /*
  * Center a dialog with regards to the main application Window or the desktop
- * See http://msdn.microsoft.com/en-us/library/windows/desktop/ms644996.aspx#init_box
+ * See https://docs.microsoft.com/en-gb/windows/desktop/dlgbox/using-dialog-boxes#initializing-a-dialog-box
  */
-void CenterDialog(HWND hDlg)
+void CenterDialog(HWND hDlg, HWND hParent)
 {
-	HWND hParent;
 	RECT rc, rcDlg, rcParent;
 
-	if ((hParent = GetParent(hDlg)) == NULL) {
+	if (hParent == NULL)
+		hParent = GetParent(hDlg);
+	if (hParent == NULL)
 		hParent = GetDesktopWindow();
-	}
 
 	GetWindowRect(hParent, &rcParent);
 	GetWindowRect(hDlg, &rcDlg);
@@ -527,7 +529,7 @@ INT_PTR CALLBACK LicenseCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
 	case WM_INITDIALOG:
 		hLicense = GetDlgItem(hDlg, IDC_LICENSE_TEXT);
 		apply_localization(IDD_LICENSE, hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		ResizeButtonHeight(hDlg, IDCANCEL);
 		// Suppress any inherited RTL flags
 		style = GetWindowLongPtr(hLicense, GWL_EXSTYLE);
@@ -573,7 +575,7 @@ INT_PTR CALLBACK AboutCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lP
 		// Execute dialog localization
 		apply_localization(IDD_ABOUTBOX, hDlg);
 		SetTitleBarIcon(hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		// Resize the 'License' button
 		hCtrl = GetDlgItem(hDlg, IDC_ABOUT_LICENSE);
 		GetWindowRect(hCtrl, &rc);
@@ -586,7 +588,7 @@ INT_PTR CALLBACK AboutCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lP
 		ResizeButtonHeight(hDlg, IDOK);
 		static_sprintf(about_blurb, about_blurb_format, lmprintf(MSG_174|MSG_RTF),
 			lmprintf(MSG_175|MSG_RTF, rufus_version[0], rufus_version[1], rufus_version[2]),
-			"Copyright © 2011-2018 Pete Batard / Akeo",
+			"Copyright © 2011-2019 Pete Batard / Akeo",
 			lmprintf(MSG_176|MSG_RTF), lmprintf(MSG_177|MSG_RTF), lmprintf(MSG_178|MSG_RTF));
 		for (i=0; i<ARRAYSIZE(hEdit); i++) {
 			hEdit[i] = GetDlgItem(hDlg, edit_id[i]);
@@ -701,7 +703,7 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
 		buttonface_brush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
 		SetTitleBarIcon(hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		// Change the default icon
 		if (Static_SetIcon(GetDlgItem(hDlg, IDC_NOTIFICATION_ICON), hMessageIcon) == 0) {
 			uprintf("Could not set dialog icon\n");
@@ -894,7 +896,7 @@ INT_PTR CALLBACK SelectionCallback(HWND hDlg, UINT message, WPARAM wParam, LPARA
 		background_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
 		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
 		SetTitleBarIcon(hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		// Change the default icon and set the text
 		Static_SetIcon(GetDlgItem(hDlg, IDC_SELECTION_ICON), LoadIcon(NULL, IDI_QUESTION));
 		SetWindowTextU(hDlg, szMessageTitle);
@@ -1027,7 +1029,7 @@ INT_PTR CALLBACK ListCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 		background_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
 		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
 		SetTitleBarIcon(hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		// Change the default icon and set the text
 		Static_SetIcon(GetDlgItem(hDlg, IDC_LIST_ICON), LoadIcon(NULL, IDI_EXCLAMATION));
 		SetWindowTextU(hDlg, szMessageTitle);
@@ -1410,7 +1412,7 @@ INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
 		apply_localization(IDD_UPDATE_POLICY, hDlg);
 		PositionControls(hDlg);
 		SetTitleBarIcon(hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		hFrequency = GetDlgItem(hDlg, IDC_UPDATE_FREQUENCY);
 		hBeta = GetDlgItem(hDlg, IDC_INCLUDE_BETAS);
 		IGNORE_RETVAL(ComboBox_SetItemData(hFrequency, ComboBox_AddStringU(hFrequency, lmprintf(MSG_013)), -1));
@@ -1419,7 +1421,7 @@ INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
 		IGNORE_RETVAL(ComboBox_SetItemData(hFrequency, ComboBox_AddStringU(hFrequency, lmprintf(MSG_016)), 2629800));
 		freq = ReadSetting32(SETTING_UPDATE_INTERVAL);
 		EnableWindow(GetDlgItem(hDlg, IDC_CHECK_NOW), (freq != 0));
-		EnableWindow(hBeta, (freq >= 0));
+		EnableWindow(hBeta, (freq >= 0) && is_x86_32);
 		switch(freq) {
 		case -1:
 			IGNORE_RETVAL(ComboBox_SetCurSel(hFrequency, 0));
@@ -1441,7 +1443,7 @@ INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
 		}
 		IGNORE_RETVAL(ComboBox_AddStringU(hBeta, lmprintf(MSG_008)));
 		IGNORE_RETVAL(ComboBox_AddStringU(hBeta, lmprintf(MSG_009)));
-		IGNORE_RETVAL(ComboBox_SetCurSel(hBeta, ReadSettingBool(SETTING_INCLUDE_BETAS)?0:1));
+		IGNORE_RETVAL(ComboBox_SetCurSel(hBeta, (ReadSettingBool(SETTING_INCLUDE_BETAS) && is_x86_32) ? 0 : 1));
 		hPolicy = GetDlgItem(hDlg, IDC_POLICY);
 		SendMessage(hPolicy, EM_AUTOURLDETECT, 1, 0);
 		static_sprintf(update_policy_text, update_policy, lmprintf(MSG_179|MSG_RTF),
@@ -1541,6 +1543,35 @@ BOOL SetUpdateCheck(void)
 			 ((ReadSetting32(SETTING_UPDATE_INTERVAL) == -1) && enable_updates) )
 			WriteSetting32(SETTING_UPDATE_INTERVAL, 86400);
 	}
+	// Also detect if we can use Fido, which depends on:
+	// - Powershell being installed
+	// - Update check being enabled
+	// - URL for the script being reachable
+	if (((ReadRegistryKey32(REGKEY_HKLM, "Microsoft\\PowerShell\\1\\Install") > 0) ||
+		 (ReadRegistryKey32(REGKEY_HKLM, "Microsoft\\PowerShell\\3\\Install") > 0)) &&
+		(ReadSetting32(SETTING_UPDATE_INTERVAL) > 0)) {
+		char *loc = NULL;
+		// Get the Fido URL from parsing a 'Fido.ver' on our server. This enables the use of different
+		// Fido versions from different versions of Rufus, if needed, as opposed to always downloading
+		// the latest release from GitHub, which may contain incompatible changes...
+		uint64_t loc_len = DownloadToFileOrBuffer(RUFUS_URL "/Fido.ver", NULL, (BYTE**)&loc, NULL, FALSE);
+		if ((loc_len != 0) && (loc_len < 4 * KB)) {
+			loc_len++;	// DownloadToFileOrBuffer allocated an extra NUL character if needed
+			fido_url = get_token_data_buffer(FIDO_VERSION, 1, loc, (size_t)loc_len);
+			if (safe_strncmp(fido_url, "https://github.com/pbatard/Fido", 31) != 0) {
+				ubprintf("WARNING: Download script URL %s is invalid ✗", fido_url);
+				safe_free(fido_url);
+			} else {
+				uprintf("Fido URL is %s", fido_url);
+				enable_fido = IsDownloadable(fido_url);
+			}
+		}
+		safe_free(loc);
+	}
+	if (!enable_fido) {
+		ubprintf("Notice: The ISO download feature has been deactivated because %s", (ReadSetting32(SETTING_UPDATE_INTERVAL) <= 0) ?
+			"'Check for updates' is disabled in your settings." : "the remote download script can not be accessed.");
+	}
 	return TRUE;
 }
 
@@ -1598,6 +1629,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 	static HFONT hyperlink_font = NULL;
 	static HANDLE hThread = NULL;
 	HWND hNotes;
+	LONG err;
 	DWORD exit_code;
 	STARTUPINFOA si;
 	PROCESS_INFORMATION pi;
@@ -1608,7 +1640,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		apply_localization(IDD_NEW_VERSION, hDlg);
 		download_status = 0;
 		SetTitleBarIcon(hDlg);
-		CenterDialog(hDlg);
+		CenterDialog(hDlg, NULL);
 		// Subclass the callback so that we can change the cursor
 		update_original_proc = (WNDPROC)SetWindowLongPtr(hDlg, GWLP_WNDPROC, (LONG_PTR)update_subclass_callback);
 		hNotes = GetDlgItem(hDlg, IDC_RELEASE_NOTES);
@@ -1663,12 +1695,20 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 				}
 
 				hThread = NULL;
-				Sleep(1000);	// Add a delay on account of antivirus scanners
+				EnableWindow(GetDlgItem(hDlg, IDC_DOWNLOAD), FALSE);
+				// Add a 1.5 sec delay, with coundown, on account of antivirus scanners
+				SetWindowTextA(GetDlgItem(hDlg, IDC_DOWNLOAD), "3");
+				Sleep(500);
+				SetWindowTextA(GetDlgItem(hDlg, IDC_DOWNLOAD), "2");
+				Sleep(500);
+				SetWindowTextA(GetDlgItem(hDlg, IDC_DOWNLOAD), "1");
+				Sleep(500);
+				SetWindowTextU(GetDlgItem(hDlg, IDC_DOWNLOAD), lmprintf(MSG_142));
 
-				if (ValidateSignature(hDlg, filepath) != NO_ERROR) {
-					// Unconditionally delete the download and disable the "Launch" control
-					_unlinkU(filepath);
-					EnableWindow(GetDlgItem(hDlg, IDC_DOWNLOAD), FALSE);
+				err = ValidateSignature(hDlg, filepath);
+				if ((err != NO_ERROR) && ((force_update < 2) || (err != TRUST_E_TIME_STAMP))) {
+					// Unconditionally delete the download
+					DeleteFileU(filepath);
 					break;
 				}
 
@@ -1903,29 +1943,30 @@ INT_PTR MyDialogBox(HINSTANCE hInstance, int Dialog_ID, HWND hWndParent, DLGPROC
 
 /*
  * The following function calls are used to automatically detect and close the native
- * Windows format prompt "You must format the disk in drive X:". To do that, we use an
- * event hook that gets triggered whenever a window is placed in the foreground.
+ * Windows format prompt "You must format the disk in drive X:" as well as the cookies
+ * alert being popped by Windows when running our Download script. To do that, we use
+ * an event hook that gets triggered whenever a window is placed in the foreground.
  * In that hook, we look for a dialog that has style WS_POPUPWINDOW and has the relevant
- * title. However, because the title in itself is too generic (the expectation is that
- * it will be "Microsoft Windows") we also enumerate all the child controls from that
- * prompt, using another callback, until we find one that contains the text we expect
- * for the "Format disk" button.
+ * title. However, in case of the Format prompt, because the title in itself is too
+ * generic (the expectation is that it will be "Microsoft Windows") we also enumerate
+ * all the child controls from that prompt, using another callback, until we find one
+ * that contains the text we expect for the "Format disk" button.
  * Oh, and since all of these strings are localized, we must first pick them up from
- * the relevant mui (something like "C:\Windows\System32\en-GB\shell32.dll.mui")
+ * the relevant mui's.
  */
-static BOOL CALLBACK FormatPromptCallback(HWND hWnd, LPARAM lParam)
+static BOOL CALLBACK AlertPromptCallback(HWND hWnd, LPARAM lParam)
 {
 	char str[128];
 	BOOL *found = (BOOL*)lParam;
 
 	if (GetWindowTextU(hWnd, str, sizeof(str)) == 0)
 		return TRUE;
-	if (safe_strcmp(str, fp_button_str) == 0)
+	if (safe_strcmp(str, button_str) == 0)
 		*found = TRUE;
 	return TRUE;
 }
 
-static void CALLBACK FormatPromptHook(HWINEVENTHOOK hWinEventHook, DWORD Event, HWND hWnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
+static void CALLBACK AlertPromptHook(HWINEVENTHOOK hWinEventHook, DWORD Event, HWND hWnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
 {
 	char str[128];
 	BOOL found;
@@ -1934,53 +1975,71 @@ static void CALLBACK FormatPromptHook(HWINEVENTHOOK hWinEventHook, DWORD Event, 
 		if (GetWindowLongPtr(hWnd, GWL_STYLE) & WS_POPUPWINDOW) {
 			str[0] = 0;
 			GetWindowTextU(hWnd, str, sizeof(str));
-			if (safe_strcmp(str, fp_title_str) == 0) {
+			if (strcmp(str, title_str[0]) == 0) {
 				found = FALSE;
-				EnumChildWindows(hWnd, FormatPromptCallback, (LPARAM)&found);
+				EnumChildWindows(hWnd, AlertPromptCallback, (LPARAM)&found);
 				if (found) {
 					SendMessage(hWnd, WM_COMMAND, (WPARAM)IDCANCEL, (LPARAM)0);
 					uprintf("Closed Windows format prompt");
 				}
+			} else if (close_fido_cookie_prompts && strcmp(str, title_str[1]) == 0) {
+				SendMessage(hWnd, WM_COMMAND, (WPARAM)IDCANCEL, (LPARAM)0);
+			} else if ((strcmp(str, title_str[2]) == 0) && (hWnd != hFidoDlg)) {
+				// A wild Fido dialog appeared! => Keep track of its handle and center it
+				hFidoDlg = hWnd;
+				CenterDialog(hWnd, hMainDialog);
 			}
 		}
 	}
 }
 
-BOOL SetFormatPromptHook(void)
+void SetAlertPromptMessages(void)
 {
 	HMODULE mui_lib;
 	char mui_path[MAX_PATH];
-	static char title_str[128], button_str[128];
 
-	if (fp_weh != NULL)
-		return TRUE;	// No need to set again if active
-
-						// Fetch the localized strings in the relevant
+	// Fetch the localized strings in the relevant MUI
 	static_sprintf(mui_path, "%s\\%s\\shell32.dll.mui", system_dir, GetCurrentMUI());
 	mui_lib = LoadLibraryU(mui_path);
 	if (mui_lib != NULL) {
 		// 4097 = "You need to format the disk in drive %c: before you can use it." (dialog text)
 		// 4125 = "Microsoft Windows" (dialog title)
 		// 4126 = "Format disk" (button)
-		if (LoadStringU(mui_lib, 4125, title_str, sizeof(title_str)) > 0)
-			fp_title_str = title_str;
-		else
+		if (LoadStringU(mui_lib, 4125, title_str[0], sizeof(title_str[0])) <= 0) {
+			static_strcpy(title_str[0], "Microsoft Windows");
 			uprintf("Warning: Could not locate localized format prompt title string in '%s': %s", mui_path, WindowsErrorString());
-		if (LoadStringU(mui_lib, 4126, button_str, sizeof(button_str)) > 0)
-			fp_button_str = button_str;
-		else
+		}
+		if (LoadStringU(mui_lib, 4126, button_str, sizeof(button_str)) <= 0) {
+			static_strcpy(button_str, "Format disk");
 			uprintf("Warning: Could not locate localized format prompt button string in '%s': %s", mui_path, WindowsErrorString());
+		}
 		FreeLibrary(mui_lib);
 	}
-
-	fp_weh = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
-		FormatPromptHook, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-	return (fp_weh != NULL);
+	static_sprintf(mui_path, "%s\\%s\\urlmon.dll.mui", system_dir, GetCurrentMUI());
+	mui_lib = LoadLibraryU(mui_path);
+	if (mui_lib != NULL) {
+		// 2070 = "Windows Security Warning" (yes, that's what MS uses for a stupid cookie!)
+		if (LoadStringU(mui_lib, 2070, title_str[1], sizeof(title_str[1])) <= 0) {
+			static_strcpy(title_str[1], "Windows Security Warning");
+			uprintf("Warning: Could not locate localized cookie prompt title string in '%s': %s", mui_path, WindowsErrorString());
+		}
+		FreeLibrary(mui_lib);
+	}
+	static_strcpy(title_str[2], lmprintf(MSG_149));
 }
 
-void ClrFormatPromptHook(void) {
-	UnhookWinEvent(fp_weh);
-	fp_weh = NULL;
+BOOL SetAlertPromptHook(void)
+{
+	if (ap_weh != NULL)
+		return TRUE;	// No need to set again if active
+	ap_weh = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
+		AlertPromptHook, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+	return (ap_weh != NULL);
+}
+
+void ClrAlertPromptHook(void) {
+	UnhookWinEvent(ap_weh);
+	ap_weh = NULL;
 }
 
 void FlashTaskbar(HANDLE handle)
