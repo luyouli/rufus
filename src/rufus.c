@@ -51,7 +51,6 @@
 #include "../res/grub2/grub2_version.h"
 
 static const char* cmdline_hogger = "rufus.com";
-static const char* FileSystemLabel[FS_MAX] = { "FAT", "FAT32", "NTFS", "UDF", "exFAT", "ReFS" };
 static const char* ep_reg = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
 static const char* vs_reg = "Software\\Microsoft\\VisualStudio";
 static BOOL existing_key = FALSE;	// For LGP set/restore
@@ -84,6 +83,7 @@ extern long grub2_len;
 extern char* szStatusMessage;
 extern const char* old_c32_name[NB_OLD_C32];
 extern const char* cert_name[3];
+extern const char* FileSystemLabel[FS_MAX];
 
 /*
  * Globals
@@ -108,7 +108,7 @@ BOOL enable_HDDs = FALSE, enable_ntfs_compression = FALSE, no_confirmation_on_ca
 BOOL advanced_mode_device, advanced_mode_format, allow_dual_uefi_bios, detect_fakes, enable_vmdk, force_large_fat32, usb_debug;
 BOOL use_fake_units, preserve_timestamps = FALSE, fast_zeroing = FALSE, app_changed_size = FALSE;
 BOOL zero_drive = FALSE, list_non_usb_removable_drives = FALSE, enable_file_indexing, large_drive = FALSE;
-BOOL write_as_image = FALSE, installed_uefi_ntfs = FALSE, enable_fido = FALSE;
+BOOL write_as_image = FALSE, installed_uefi_ntfs = FALSE, enable_fido = FALSE, use_vds = FALSE;
 float fScale = 1.0f;
 int dialog_showing = 0, selection_default = BT_IMAGE, windows_to_go_selection = 0, persistence_unit_selection = -1;
 int default_fs, fs_type, boot_type, partition_type, target_type; // file system, boot type, partition type, target type
@@ -121,7 +121,7 @@ char msgbox[1024], msgbox_title[32], *ini_file = NULL, *image_path = NULL, *shor
 char image_option_txt[128], *fido_url = NULL;
 StrArray DriveID, DriveLabel, DriveHub, BlockingProcess, ImageList;
 // Number of steps for each FS for FCC_STRUCTURE_PROGRESS
-const int nb_steps[FS_MAX] = { 5, 5, 12, 1, 10 };
+const int nb_steps[FS_MAX] = { 5, 5, 12, 1, 10, 1, 1, 1, 1 };
 const char* flash_type[BADLOCKS_PATTERN_TYPES] = { "SLC", "MLC", "TLC" };
 
 // TODO: Remember to update copyright year in stdlg's AboutCallback() WM_INITDIALOG,
@@ -172,11 +172,11 @@ static void SetAllowedFileSystems(void)
 		}
 		break;
 	case BT_SYSLINUX_V6:
+	case BT_GRUB4DOS:
 		allowed_filesystem[FS_NTFS] = TRUE;
 		// Fall through
 	case BT_SYSLINUX_V4:
 	case BT_REACTOS:
-	case BT_GRUB4DOS:
 	case BT_GRUB2:
 		allowed_filesystem[FS_FAT16] = TRUE;
 		allowed_filesystem[FS_FAT32] = TRUE;
@@ -480,7 +480,16 @@ static BOOL SetFileSystemAndClusterSize(char* fs_name)
 		SelectedDrive.ClusterSize[FS_UDF].Allowed = SINGLE_CLUSTERSIZE_DEFAULT;
 		SelectedDrive.ClusterSize[FS_UDF].Default = 1;
 
+		// ext2/ext3/ext4
+		if (advanced_mode_format) {
+			SelectedDrive.ClusterSize[FS_EXT2].Allowed = SINGLE_CLUSTERSIZE_DEFAULT;
+			SelectedDrive.ClusterSize[FS_EXT2].Default = 1;
+			SelectedDrive.ClusterSize[FS_EXT3].Allowed = SINGLE_CLUSTERSIZE_DEFAULT;
+			SelectedDrive.ClusterSize[FS_EXT3].Default = 1;
+		}
+
 		// ReFS (only supported for Windows 8.1 and later and for fixed disks)
+		// TODO: Check later versions of Windows 10 for disabled ReFS (IVdsService::QueryFileSystemTypes?)
 		if (SelectedDrive.DiskSize >= 512*MB) {
 			if ((nWindowsVersion >= WINDOWS_8_1) && (SelectedDrive.MediaType == FixedMedia)) {
 				SelectedDrive.ClusterSize[FS_REFS].Allowed = SINGLE_CLUSTERSIZE_DEFAULT;
@@ -668,7 +677,8 @@ static void EnableMBRBootOptions(BOOL enable, BOOL remove_checkboxes)
 	BOOL actual_enable_fix = enable;
 	static UINT uXPartChecked = BST_UNCHECKED;
 
-	if ((partition_type != PARTITION_STYLE_MBR) || (target_type != TT_BIOS) || ((boot_type == BT_IMAGE) && !IS_BIOS_BOOTABLE(img_report))) {
+	if ((partition_type != PARTITION_STYLE_MBR) || (target_type != TT_BIOS) || (boot_type == BT_NON_BOOTABLE) ||
+		((boot_type == BT_IMAGE) && !IS_BIOS_BOOTABLE(img_report))) {
 		// These options cannot apply if we aren't using MBR+BIOS, or are using an image that isn't BIOS bootable
 		actual_enable_mbr = FALSE;
 		actual_enable_fix = FALSE;
@@ -699,6 +709,23 @@ static void EnableMBRBootOptions(BOOL enable, BOOL remove_checkboxes)
 	EnableWindow(GetDlgItem(hMainDialog, IDC_OLD_BIOS_FIXES), actual_enable_fix);
 	EnableWindow(GetDlgItem(hMainDialog, IDC_RUFUS_MBR), actual_enable_mbr);
 	EnableWindow(hDiskID, actual_enable_mbr);
+}
+
+static void EnableExtendedLabel(BOOL enable)
+{
+	HWND hCtrl = GetDlgItem(hMainDialog, IDC_EXTENDED_LABEL);
+	static UINT checked, state = 0;
+
+	if (!enable && IsWindowEnabled(hCtrl) && (state != 1)) {
+		checked = IsChecked(IDC_EXTENDED_LABEL);
+		CheckDlgButton(hMainDialog, IDC_EXTENDED_LABEL, BST_UNCHECKED);
+		state = 1;
+	} else if (enable && !IsWindowEnabled(hCtrl) && (state != 2)) {
+		if (state != 0)
+			CheckDlgButton(hMainDialog, IDC_EXTENDED_LABEL, checked);
+		state = 2;
+	}
+	EnableWindow(hCtrl, enable);
 }
 
 static void EnableQuickFormat(BOOL enable)
@@ -753,7 +780,7 @@ static void EnableBootOptions(BOOL enable, BOOL remove_checkboxes)
 	EnableQuickFormat(actual_enable);
 	EnableWindow(GetDlgItem(hMainDialog, IDC_BAD_BLOCKS), actual_enable_bb);
 	EnableWindow(GetDlgItem(hMainDialog, IDC_NB_PASSES), actual_enable_bb);
-	EnableWindow(GetDlgItem(hMainDialog, IDC_EXTENDED_LABEL), actual_enable);
+	EnableExtendedLabel((fs_type < FS_EXT2) ? actual_enable : FALSE);
 }
 
 // Toggle controls according to operation
@@ -1266,11 +1293,16 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 					static_sprintf(tmp, "%s/%s-%s/%s", FILES_URL, grub, img_report.grub2_version, core_img);
 					grub2_len = (long)DownloadSignedFile(tmp, core_img, hMainDialog, FALSE);
 					if ((grub2_len == 0) && (DownloadStatus == 404)) {
+						// Manjaro (always them!) are using "2.03.5" as identifier, so we must detect first dot...
+						BOOL first_dot = TRUE;
 						// Couldn't locate the file on the server => try to download without the version extra
 						uprintf("Extended version was not found, trying main version...");
 						static_strcpy(tmp2, img_report.grub2_version);
 						// Isolate the #.### part
-						for (i = 0; ((tmp2[i] >= '0') && (tmp2[i] <= '9')) || (tmp2[i] == '.'); i++);
+						for (i = 0; ((tmp2[i] >= '0') && (tmp2[i] <= '9')) || ((tmp2[i] == '.') && first_dot); i++) {
+							if (tmp2[i] == '.')
+								first_dot = FALSE;
+						}
 						tmp2[i] = 0;
 						static_sprintf(tmp, "%s/%s-%s/%s", FILES_URL, grub, tmp2, core_img);
 						grub2_len = (long)DownloadSignedFile(tmp, core_img, hMainDialog, FALSE);
@@ -1529,7 +1561,7 @@ static void InitDialog(HWND hDlg)
 	CharUpperBuffU(uppercase_select[0], sizeof(uppercase_select[0]));
 	CharUpperBuffU(uppercase_select[1], sizeof(uppercase_select[1]));
 	SetWindowTextU(GetDlgItem(hDlg, IDC_SELECT), uppercase_select[0]);
-	strcpy(uppercase_cancel, lmprintf(MSG_007));
+	static_strcpy(uppercase_cancel, lmprintf(MSG_007));
 	CharUpperBuffU(uppercase_cancel, sizeof(uppercase_cancel));
 
 	CreateSmallButtons(hDlg);
@@ -1859,10 +1891,6 @@ out:
 	return ret;
 }
 
-
-#ifdef RUFUS_TEST
-extern BOOL FormatExtFs(const char* label, uint32_t version);
-#endif
 /*
  * Main dialog callback
  */
@@ -1898,7 +1926,8 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 	case WM_COMMAND:
 #ifdef RUFUS_TEST
 		if (LOWORD(wParam) == IDC_TEST) {
-			FormatExtFs("casper-rw", 3);
+			DWORD DriveIndex = (DWORD)ComboBox_GetItemData(hDeviceList, ComboBox_GetCurSel(hDeviceList));
+			uprintf("label = '%s'", GetExtFsLabel(DriveIndex, 1));
 			break;
 		}
 #endif
@@ -2031,6 +2060,11 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 			advanced_mode_format = !advanced_mode_format;
 			WriteSettingBool(SETTING_ADVANCED_MODE_FORMAT, advanced_mode_format);
 			ToggleAdvancedFormatOptions(advanced_mode_format);
+			if (selected_fs == FS_UNKNOWN)
+				selected_fs = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
+			SetFileSystemAndClusterSize(NULL);
+			SendMessage(hMainDialog, WM_COMMAND, (CBN_SELCHANGE_INTERNAL << 16) | IDC_FILE_SYSTEM,
+				ComboBox_GetCurSel(hFileSystem));
 			break;
 		case IDC_LABEL:
 			if (HIWORD(wParam) == EN_CHANGE) {
@@ -2137,6 +2171,7 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 				selected_fs = fs_type;
 			EnableMBRBootOptions(TRUE, FALSE);
 			SetMBRProps();
+			EnableExtendedLabel((fs_type < FS_EXT2));
 			break;
 		case IDC_BOOT_SELECTION:
 			if (HIWORD(wParam) != CBN_SELCHANGE)
@@ -2598,16 +2633,19 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 
 			if ((boot_type == BT_IMAGE) && IS_DD_BOOTABLE(img_report)) {
 				if (img_report.is_iso) {
-					// Ask users how they want to write ISOHybrid images
-					char* iso_image = lmprintf(MSG_036);
-					char* dd_image = lmprintf(MSG_095);
-					char* choices[2] = { lmprintf(MSG_276, iso_image), lmprintf(MSG_277, dd_image) };
-					i = SelectionDialog(lmprintf(MSG_274), lmprintf(MSG_275, iso_image, dd_image, iso_image, dd_image),
-						choices, 2);
-					if (i < 0)	// Cancel
-						goto aborted_start;
-					else if (i == 2)
-						write_as_image = TRUE;
+					// Ask users how they want to write ISOHybrid images,
+					// but only do so if persistence has not been selected.
+					if (persistence_size == 0) {
+						char* iso_image = lmprintf(MSG_036);
+						char* dd_image = lmprintf(MSG_095);
+						char* choices[2] = { lmprintf(MSG_276, iso_image), lmprintf(MSG_277, dd_image) };
+						i = SelectionDialog(lmprintf(MSG_274), lmprintf(MSG_275, iso_image, dd_image, iso_image, dd_image),
+							choices, 2);
+						if (i < 0)	// Cancel
+							goto aborted_start;
+						else if (i == 2)
+							write_as_image = TRUE;
+					}
 				} else {
 					write_as_image = TRUE;
 				}
@@ -3023,6 +3061,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	advanced_mode_format = ReadSettingBool(SETTING_ADVANCED_MODE_FORMAT);
 	preserve_timestamps = ReadSettingBool(SETTING_PRESERVE_TIMESTAMPS);
 	use_fake_units = !ReadSettingBool(SETTING_USE_PROPER_SIZE_UNITS);
+	use_vds = ReadSettingBool(SETTING_USE_VDS);
 	usb_debug = ReadSettingBool(SETTING_ENABLE_USB_DEBUG);
 	detect_fakes = !ReadSettingBool(SETTING_DISABLE_FAKE_DRIVES_CHECK);
 	allow_dual_uefi_bios = ReadSettingBool(SETTING_ENABLE_WIN_DUAL_EFI_BIOS);
@@ -3195,7 +3234,7 @@ relaunch:
 
 	// Do our own event processing and process "magic" commands
 	while(GetMessage(&msg, NULL, 0, 0)) {
-		// ** *****  **** ** ***** ****
+		// ** *****  **** ** **********
 		// .,ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
 		// Ctrl-A => Select the log data
@@ -3352,6 +3391,13 @@ relaunch:
 			WriteSettingBool(SETTING_USE_PROPER_SIZE_UNITS, !use_fake_units);
 			PrintStatusTimeout(lmprintf(MSG_263), !use_fake_units);
 			GetDevices(0);
+			continue;
+		}
+		// Alt-V => Use VDS facilities for formatting
+		if ((msg.message == WM_SYSKEYDOWN) && (msg.wParam == 'V')) {
+			use_vds = !use_vds;
+			WriteSettingBool(SETTING_USE_VDS, use_vds);
+			PrintStatusTimeout("VDS", use_vds);
 			continue;
 		}
 		// Alt-W => Enable VMWare disk detection
