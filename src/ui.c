@@ -686,11 +686,11 @@ void TogglePersistenceControls(BOOL display)
 	ShowWindow(hUnits, display ? SW_SHOW : SW_HIDE);
 }
 
-void SetPeristencePos(uint64_t pos)
+void SetPersistencePos(uint64_t pos)
 {
 	char tmp[64];
 
-	if (pos != 0) {
+	if ((boot_type == BT_IMAGE) && (pos != 0)) {
 		TogglePersistenceControls(TRUE);
 		static_sprintf(tmp, "%ld", (LONG)pos);
 	} else {
@@ -745,7 +745,7 @@ void SetPersistenceSize(void)
 	SendMessage(hCtrl, TBM_SETRANGEMAX, (WPARAM)TRUE, (LPARAM)max);
 	SendMessage(hCtrl, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)pos);
 
-	SetPeristencePos(pos);
+	SetPersistencePos(pos);
 }
 
 // Toggle the Image Option dropdown (Windows To Go or persistence settings)
@@ -888,6 +888,7 @@ static INT_PTR CALLBACK ProgressCallback(HWND hCtrl, UINT message, WPARAM wParam
 		return (INT_PTR)TRUE;
 
 	case PBM_SETRANGE:
+		CallWindowProc(progress_original_proc, hCtrl, message, wParam, lParam);
 		// Don't bother sanity checking min and max: If *you* want to
 		// be an ass about the progress bar range, it's *your* problem.
 		min = (uint32_t)(lParam & 0xFFFF);
@@ -895,11 +896,13 @@ static INT_PTR CALLBACK ProgressCallback(HWND hCtrl, UINT message, WPARAM wParam
 		return (INT_PTR)TRUE;
 
 	case PBM_SETPOS:
+		CallWindowProc(progress_original_proc, hCtrl, message, wParam, lParam);
 		pos = (WORD)wParam;
 		InvalidateRect(hProgress, NULL, TRUE);
 		return (INT_PTR)TRUE;
 
 	case PBM_SETMARQUEE:
+		CallWindowProc(progress_original_proc, hCtrl, message, wParam, lParam);
 		if ((wParam == TRUE) && (!marquee_mode)) {
 			marquee_mode = TRUE;
 			pos = min;
