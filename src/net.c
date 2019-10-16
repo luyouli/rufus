@@ -71,7 +71,6 @@ const char* WinInetErrorString(void)
 	if ((error_code < INTERNET_ERROR_BASE) || (error_code > INTERNET_ERROR_LAST))
 		return WindowsErrorString();
 
-	// TODO: These should be localized on an ad-hoc basis
 	switch(error_code) {
 	case ERROR_INTERNET_OUT_OF_HANDLES:
 		return "No more handles could be generated at this time.";
@@ -316,7 +315,6 @@ uint64_t DownloadToFileOrBuffer(const char* url, const char* file, BYTE** buffer
 	const char* short_name;
 	unsigned char buf[DOWNLOAD_BUFFER_SIZE];
 	char hostname[64], urlpath[128], strsize[32];
-	HWND hProgressBar = NULL;
 	BOOL r = FALSE;
 	DWORD dwSize, dwWritten, dwDownloaded;
 	HANDLE hFile = INVALID_HANDLE_VALUE;
@@ -343,16 +341,8 @@ uint64_t DownloadToFileOrBuffer(const char* url, const char* file, BYTE** buffer
 
 	FormatStatus = 0;
 	DownloadStatus = 404;
-	if (hProgressDialog != NULL) {
-		// Use the progress control provided, if any
-		hProgressBar = GetDlgItem(hProgressDialog, IDC_PROGRESS);
-		if (hProgressBar != NULL) {
-			SendMessage(hProgressBar, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
-			SendMessage(hProgressBar, PBM_SETMARQUEE, FALSE, 0);
-			SendMessage(hProgressBar, PBM_SETPOS, 0, 0);
-		}
-		SendMessage(hProgressDialog, UM_PROGRESS_INIT, 0, 0);
-	}
+	if (hProgressDialog != NULL)
+		UpdateProgressWithInfoInit(hProgressDialog, FALSE);
 
 	assert(url != NULL);
 	if (buffer != NULL)
@@ -449,12 +439,8 @@ uint64_t DownloadToFileOrBuffer(const char* url, const char* file, BYTE** buffer
 			goto out;
 		if (!pfInternetReadFile(hRequest, buf, sizeof(buf), &dwDownloaded) || (dwDownloaded == 0))
 			break;
-		if (hProgressDialog != NULL) {
-			SendMessage(hProgressBar, PBM_SETPOS, (WPARAM)((1.0f * MAX_PROGRESS * size) / (1.0f * total_size)), 0);
-			if (bTaskBarProgress)
-				SetTaskbarProgressValue((ULONGLONG)((1.0f * MAX_PROGRESS * size) / (1.0f * total_size)), MAX_PROGRESS);
-			PrintInfo(0, MSG_241, (100.0f*size) / (1.0f*total_size));
-		}
+		if (hProgressDialog != NULL)
+			UpdateProgressWithInfo(OP_NOOP, MSG_241, size, total_size);
 		if (file != NULL) {
 			if (!WriteFile(hFile, buf, dwDownloaded, &dwWritten, NULL)) {
 				uprintf("Error writing file '%s': %s", short_name, WinInetErrorString());
@@ -477,9 +463,8 @@ uint64_t DownloadToFileOrBuffer(const char* url, const char* file, BYTE** buffer
 		DownloadStatus = 200;
 		r = TRUE;
 		if (hProgressDialog != NULL) {
+			UpdateProgressWithInfo(OP_NOOP, MSG_241, total_size, total_size);
 			uprintf("Successfully downloaded '%s'", short_name);
-			SendMessage(hProgressBar, PBM_SETPOS, (WPARAM)MAX_PROGRESS, 0);
-			PrintInfo(0, MSG_241, 100.0f);
 		}
 	}
 
@@ -655,7 +640,7 @@ static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 		do {
 			for (i=0; (i<30) && (!force_update_check); i++)
 				Sleep(500);
-		} while ((!force_update_check) && ((iso_op_in_progress || format_op_in_progress || (dialog_showing>0))));
+		} while ((!force_update_check) && ((op_in_progress || (dialog_showing > 0))));
 		if (!force_update_check) {
 			if ((ReadSetting32(SETTING_UPDATE_INTERVAL) == -1)) {
 				vuprintf("Check for updates disabled, as per settings.");
@@ -843,7 +828,7 @@ out:
 	// Start the new download after cleanup
 	if (found_new_version) {
 		// User may have started an operation while we were checking
-		while ((!force_update_check) && (iso_op_in_progress || format_op_in_progress || (dialog_showing > 0))) {
+		while ((!force_update_check) && (op_in_progress || (dialog_showing > 0))) {
 			Sleep(15000);
 		}
 		DownloadNewVersion();
@@ -1008,7 +993,6 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 			// Download the ISO and report errors if any
 			SendMessage(hMainDialog, UM_PROGRESS_INIT, 0, 0);
 			FormatStatus = 0;
-			format_op_in_progress = TRUE;
 			SendMessage(hMainDialog, UM_TIMER_START, 0, 0);
 			if (DownloadToFileOrBuffer(url, img_save.ImagePath, NULL, hMainDialog, TRUE) == 0) {
 				SendMessage(hMainDialog, UM_PROGRESS_EXIT, 0, 0);
@@ -1025,7 +1009,6 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 				image_path = safe_strdup(img_save.ImagePath);
 				PostMessage(hMainDialog, UM_SELECT_ISO, 0, 0);
 			}
-			format_op_in_progress = FALSE;
 			safe_free(img_save.ImagePath);
 		}
 	}

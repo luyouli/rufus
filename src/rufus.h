@@ -224,14 +224,17 @@ enum timer_type {
 
 /* Action type, for progress bar breakdown */
 enum action_type {
-	OP_ANALYZE_MBR,
+	OP_NOOP_WITH_TASKBAR = -3,
+	OP_NOOP = -2,
+	OP_INIT = -1,
+	OP_ANALYZE_MBR = 0,
 	OP_BADBLOCKS,
 	OP_ZERO_MBR,
 	OP_PARTITION,
 	OP_FORMAT,
 	OP_CREATE_FS,
 	OP_FIX_MBR,
-	OP_DOS,
+	OP_FILE_COPY,
 	OP_FINALIZE,
 	OP_MAX
 };
@@ -303,6 +306,7 @@ enum checksum_type {
 #define HAS_WIN7_EFI(r)     ((r.has_efi == 1) && HAS_WININST(r))
 #define HAS_EFI_IMG(r)      (r.efi_img_path[0] != 0)
 #define IS_DD_BOOTABLE(r)   (r.is_bootable_img)
+#define IS_DD_ONLY(r)       (r.is_bootable_img && (!r.is_iso || r.disable_iso))
 #define IS_EFI_BOOTABLE(r)  (r.has_efi != 0)
 #define IS_BIOS_BOOTABLE(r) (HAS_BOOTMGR(r) || HAS_SYSLINUX(r) || HAS_WINPE(r) || HAS_GRUB(r) || HAS_REACTOS(r) || HAS_KOLIBRIOS(r))
 #define HAS_WINTOGO(r)      (HAS_BOOTMGR(r) && IS_EFI_BOOTABLE(r) && HAS_WININST(r))
@@ -322,6 +326,8 @@ typedef struct {
 	uint32_t wininst_version;
 	BOOLEAN is_iso;
 	BOOLEAN is_bootable_img;
+	BOOLEAN is_vhd;
+	BOOLEAN disable_iso;
 	uint16_t winpe;
 	uint8_t has_efi;
 	uint8_t wininst_index;
@@ -338,9 +344,9 @@ typedef struct {
 	BOOLEAN has_grub4dos;
 	BOOLEAN has_grub2;
 	BOOLEAN has_kolibrios;
+	BOOLEAN uses_casper;
 	BOOLEAN uses_minint;
 	BOOLEAN compression_type;
-	BOOLEAN is_vhd;
 	uint16_t sl_version;	// Syslinux/Isolinux version
 	char sl_version_str[12];
 	char sl_version_ext[32];
@@ -439,11 +445,12 @@ extern HWND hPartitionScheme, hTargetSystem, hFileSystem, hClusterSize, hLabel, 
 extern HWND hInfo, hProgress, hDiskID;
 extern WORD selected_langid;
 extern DWORD FormatStatus, DownloadStatus, MainThreadId, LastWriteError;
-extern BOOL use_own_c32[NB_OLD_C32], detect_fakes, iso_op_in_progress, format_op_in_progress, right_to_left_mode;
+extern BOOL use_own_c32[NB_OLD_C32], detect_fakes, op_in_progress, right_to_left_mode;
 extern BOOL allow_dual_uefi_bios, large_drive, usb_debug;
 extern int64_t iso_blocking_status;
 extern uint8_t image_options;
 extern uint16_t rufus_version[3], embedded_sl_version[2];
+extern uint64_t persistence_size;
 extern size_t ubuffer_pos;
 extern const int nb_steps[FS_MAX];
 extern float fScale;
@@ -469,6 +476,8 @@ extern void PrintStatusInfo(BOOL info, BOOL debug, unsigned int duration, int ms
 #define PrintInfo(...) PrintStatusInfo(TRUE, FALSE, __VA_ARGS__)
 #define PrintInfoDebug(...) PrintStatusInfo(TRUE, TRUE, __VA_ARGS__)
 extern void UpdateProgress(int op, float percent);
+extern void UpdateProgressWithInfo(int op, int msg, uint64_t processed, uint64_t total);
+#define UpdateProgressWithInfoInit(hProgressDialog, bNoAltMode) UpdateProgressWithInfo(OP_INIT, (int)bNoAltMode, (uint64_t)(uintptr_t)hProgressDialog, 0);
 extern const char* StrError(DWORD error_code, BOOL use_default_locale);
 extern char* GuidToString(const GUID* guid);
 extern char* SizeToHumanReadable(uint64_t size, BOOL copy_to_log, BOOL fake_units);
@@ -502,7 +511,6 @@ extern char* MountISO(const char* path);
 extern void UnMountISO(void);
 extern BOOL InstallSyslinux(DWORD drive_index, char drive_letter, int fs);
 extern uint16_t GetSyslinuxVersion(char* buf, size_t buf_size, char** ext);
-extern BOOL CreateProgress(void);
 extern BOOL SetAutorun(const char* path);
 extern char* FileDialog(BOOL save, char* path, const ext_t* ext, DWORD options);
 extern BOOL FileIO(BOOL save, char* path, char** buffer, DWORD* size);
@@ -521,7 +529,6 @@ extern BOOL CheckForUpdates(BOOL force);
 extern void DownloadNewVersion(void);
 extern BOOL DownloadISO(void);
 extern BOOL IsDownloadable(const char* url);
-extern const char* ResolveRedirect(const char* url);
 extern BOOL IsShown(HWND hDlg);
 extern char* get_token_data_file_indexed(const char* token, const char* filename, int index);
 #define get_token_data_file(token, filename) get_token_data_file_indexed(token, filename, 1)

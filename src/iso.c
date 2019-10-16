@@ -62,6 +62,7 @@ typedef struct {
 	BOOLEAN is_conf;
 	BOOLEAN is_syslinux_cfg;
 	BOOLEAN is_grub_cfg;
+	BOOLEAN is_menu_cfg;
 	BOOLEAN is_old_c32[NB_OLD_C32];
 } EXTRACT_PROPS;
 
@@ -76,6 +77,7 @@ static const char* bootmgr_efi_name = "bootmgr.efi";
 static const char* grldr_name = "grldr";
 static const char* ldlinux_name = "ldlinux.sys";
 static const char* ldlinux_c32 = "ldlinux.c32";
+static const char* casper_dirname = "/casper";
 static const char* efi_dirname = "/efi/boot";
 static const char* efi_bootname[] = { "bootia32.efi", "bootia64.efi", "bootx64.efi", "bootarm.efi", "bootaa64.efi", "bootebc.efi" };
 static const char* sources_str = "/sources";
@@ -84,13 +86,17 @@ static const char* wininst_name[] = { "install.wim", "install.esd", "install.swm
 // If the disc was mastered properly, GRUB/EFI will take care of itself
 static const char* grub_dirname = "/boot/grub/i386-pc";
 static const char* grub_cfg = "grub.cfg";
-static const char* syslinux_cfg[] = { "isolinux.cfg", "syslinux.cfg", "extlinux.conf" };
+static const char* menu_cfg = "menu.cfg";
+// NB: Do not alter the order of the array below without validating hardcoded indexes in check_iso_props
+static const char* syslinux_cfg[] = { "isolinux.cfg", "syslinux.cfg", "extlinux.conf", "txt.cfg" };
 static const char* isolinux_bin[] = { "isolinux.bin", "boot.bin" };
 static const char* pe_dirname[] = { "/i386", "/amd64", "/minint" };
 static const char* pe_file[] = { "ntdetect.com", "setupldr.bin", "txtsetup.sif" };
 static const char* reactos_name = "setupldr.sys"; // TODO: freeldr.sys doesn't seem to work
 static const char* kolibri_name = "kolibri.img";
 static const char* autorun_name = "autorun.inf";
+static const char* manjaro_marker = ".miso";
+static const char* pop_os_name = "pop-os";
 static const char* stupid_antivirus = "  NOTE: This is usually caused by a poorly designed security solution. "
 	"See https://goo.gl/QTobxX.\r\n  This file will be skipped for now, but you should really "
 	"look into using a *SMARTER* antivirus solution.";
@@ -146,42 +152,59 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 	const char* psz_fullpath, EXTRACT_PROPS *props)
 {
 	size_t i, j, len;
+
 	// Check for an isolinux/syslinux config file anywhere
 	memset(props, 0, sizeof(EXTRACT_PROPS));
-	for (i=0; i<ARRAYSIZE(syslinux_cfg); i++) {
+	for (i = 0; i < ARRAYSIZE(syslinux_cfg); i++) {
 		if (safe_stricmp(psz_basename, syslinux_cfg[i]) == 0) {
 			props->is_cfg = TRUE;	// Required for "extlinux.conf"
 			props->is_syslinux_cfg = TRUE;
+			// Maintain a list of all the isolinux/syslinux config files identified so far
+			if ((scan_only) && (i < 3))
+				StrArrayAdd(&config_path, psz_fullpath, TRUE);
 			if ((scan_only) && (i == 1) && (safe_stricmp(psz_dirname, efi_dirname) == 0))
 				img_report.has_efi_syslinux = TRUE;
 		}
 	}
 
 	// Check for an old incompatible c32 file anywhere
-	for (i=0; i<NB_OLD_C32; i++) {
+	for (i = 0; i < NB_OLD_C32; i++) {
 		if ((safe_stricmp(psz_basename, old_c32_name[i]) == 0) && (file_length <= old_c32_threshold[i]))
 			props->is_old_c32[i] = TRUE;
 	}
 
-	// Check for config files that may need patching
-	if (!scan_only) {
+	if (!scan_only) {	// Write-time checks
+		// Check for config files that may need patching
 		len = safe_strlen(psz_basename);
-		if ((len >= 4) && safe_stricmp(&psz_basename[len-4], ".cfg") == 0)
+		if ((len >= 4) && safe_stricmp(&psz_basename[len - 4], ".cfg") == 0) {
 			props->is_cfg = TRUE;
-	}
+			if (safe_stricmp(psz_basename, grub_cfg) == 0) {
+				props->is_grub_cfg = TRUE;
+			} else if (safe_stricmp(psz_basename, menu_cfg) == 0) {
+				props->is_menu_cfg = TRUE;
+			}
+		}
 
-	// Check for GRUB artifacts
-	if (scan_only) {
+		// In case there's an ldlinux.sys on the ISO, prevent it from overwriting ours
+		if ((psz_dirname != NULL) && (psz_dirname[0] == 0) && (safe_stricmp(psz_basename, ldlinux_name) == 0)) {
+			uprintf("Skipping '%s' file from ISO image", psz_basename);
+			return TRUE;
+		}
+	} else {	// Scan-time checks
+		// Check for GRUB artifacts
 		if (safe_stricmp(psz_dirname, grub_dirname) == 0)
 			img_report.has_grub2 = TRUE;
-	} else if (safe_stricmp(psz_basename, grub_cfg) == 0) {
-		props->is_grub_cfg = TRUE;
-	}
 
-	if (scan_only) {
 		// Check for a syslinux v5.0+ file anywhere
 		if (safe_stricmp(psz_basename, ldlinux_c32) == 0) {
 			has_ldlinux_c32 = TRUE;
+		}
+
+		// Check for a '/casper#####' directory (non-empty)
+		if (safe_strnicmp(psz_dirname, casper_dirname, strlen(casper_dirname)) == 0) {
+			img_report.uses_casper = TRUE;
+			if (safe_strstr(psz_dirname, pop_os_name) != NULL)
+				img_report.disable_iso = TRUE;
 		}
 
 		// Check for various files in root (psz_dirname = "")
@@ -200,6 +223,9 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 			}
 			if (safe_stricmp(psz_basename, bootmgr_efi_name) == 0) {
 				img_report.has_efi |= 1;
+			}
+			if (safe_stricmp(psz_basename, manjaro_marker) == 0) {
+				img_report.disable_iso = TRUE;
 			}
 		}
 
@@ -241,10 +267,6 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 					if (safe_stricmp(psz_basename, pe_file[j]) == 0)
 						img_report.winpe |= (1<<j)<<(ARRAYSIZE(pe_dirname)*i);
 
-		if (props->is_syslinux_cfg) {
-			// Maintain a list of all the isolinux/syslinux configs identified so far
-			StrArrayAdd(&config_path, psz_fullpath, TRUE);
-		}
 		for (i=0; i<ARRAYSIZE(isolinux_bin); i++) {
 			if (safe_stricmp(psz_basename, isolinux_bin[i]) == 0) {
 				// Maintain a list of all the isolinux.bin files found
@@ -265,11 +287,6 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 			total_blocks++;
 		return TRUE;
 	}
-	// In case there's an ldlinux.sys on the ISO, prevent it from overwriting ours
-	if ((psz_dirname != NULL) && (psz_dirname[0] == 0) && (safe_strcmp(psz_basename, ldlinux_name) == 0)) {
-		uprintf("skipping % file from ISO image\n", ldlinux_name);
-		return TRUE;
-	}
 	return FALSE;
 }
 
@@ -286,13 +303,42 @@ static void fix_config(const char* psz_fullpath, const char* psz_path, const cha
 	for (i=0; i<nul_pos; i++)
 		if (src[i] == '/') src[i] = '\\';
 
+	// Add persistence to the kernel options
+	if ((boot_type == BT_IMAGE) && HAS_PERSISTENCE(img_report) && persistence_size) {
+		if ((props->is_grub_cfg) || (props->is_menu_cfg) || (props->is_syslinux_cfg)) {
+			// Ubuntu & derivatives are assumed to use '/casper/vmlinuz'
+			// in their kernel options and use 'persistent' as keyword.
+			if (replace_in_token_data(src, props->is_grub_cfg ? "linux" : "append",
+				props->is_grub_cfg ? "/casper/vmlinuz" : "initrd=/casper/initrd",
+				// Of course, Mint has to use 'initrd=/casper/initrd.lz' instead of 'initrd=/casper/initrd'
+				props->is_grub_cfg ? "/casper/vmlinuz persistent" : "persistent initrd=/casper/initrd", TRUE) != NULL)
+				uprintf("  Added 'persistent' kernel option");
+			// Debian & derivatives are assumed to use 'boot=live' in
+			// their kernel options and use 'persistence' as keyword.
+			else if (replace_in_token_data(src, props->is_grub_cfg ? "linux" : "append",
+				"boot=live", "boot=live persistence", TRUE) != NULL)
+				uprintf("  Added 'persistence' kernel option");
+			// Other distros can go to hell. Seriously, just check all partitions for
+			// an ext volume with the right label and use persistence *THEN*. I mean,
+			// why on earth do you need a bloody *NONSTANDARD* kernel option and/or a
+			// "persistence.conf" file. This is SO INCREDIBLY RETARDED that it makes
+			// Windows look smart in comparison. Great job there, Linux people!
+		}
+	}
+
 	// Workaround for config files requiring an ISO label for kernel append that may be
 	// different from our USB label. Oh, and these labels must have spaces converted to \x20.
 	if ((props->is_cfg) || (props->is_conf)) {
 		iso_label = replace_char(img_report.label, ' ', "\\x20");
 		usb_label = replace_char(img_report.usb_label, ' ', "\\x20");
 		if ((iso_label != NULL) && (usb_label != NULL)) {
-			if (replace_in_token_data(src, (props->is_grub_cfg) ? "linuxefi" : ((props->is_conf) ? "options" : "append"),
+			if (props->is_grub_cfg) {
+				// Older versions of GRUB EFI used "linuxefi", newer just use "linux"
+				if ((replace_in_token_data(src, "linux", iso_label, usb_label, TRUE) != NULL) ||
+					(replace_in_token_data(src, "linuxefi", iso_label, usb_label, TRUE) != NULL))
+					uprintf("  Patched %s: '%s' ➔ '%s'\n", src, iso_label, usb_label);
+			}
+			else if (replace_in_token_data(src, (props->is_conf) ? "options" : "append",
 				iso_label, usb_label, TRUE) != NULL)
 				uprintf("  Patched %s: '%s' ➔ '%s'\n", src, iso_label, usb_label);
 		}
@@ -400,6 +446,8 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 	if ((p_udf_dirent == NULL) || (psz_path == NULL))
 		return 1;
 
+	if (psz_path[0] == 0)
+		UpdateProgressWithInfoInit(NULL, TRUE);
 	while ((p_udf_dirent = udf_readdir(p_udf_dirent)) != NULL) {
 		if (FormatStatus) goto out;
 		psz_basename = udf_get_filename(p_udf_dirent);
@@ -479,7 +527,7 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 					}
 					file_length -= read;
 					if (nb_blocks++ % PROGRESS_THRESHOLD == 0)
-						UpdateProgress(OP_DOS, 100.0f*nb_blocks/total_blocks);
+						UpdateProgressWithInfo(OP_FILE_COPY, MSG_231, nb_blocks, total_blocks);
 				}
 			}
 			if ((preserve_timestamps) && (!SetFileTime(file_handle, to_filetime(udf_get_attribute_time(p_udf_dirent)),
@@ -541,6 +589,8 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 		return 1;
 	}
 
+	if (psz_path[0] == 0)
+		UpdateProgressWithInfoInit(NULL, TRUE);
 	_CDIO_LIST_FOREACH(p_entnode, p_entlist) {
 		if (FormatStatus) goto out;
 		p_statbuf = (iso9660_stat_t*) _cdio_list_node_data(p_entnode);
@@ -632,7 +682,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 						}
 						extent_length -= ISO_BLOCKSIZE;
 						if (nb_blocks++ % PROGRESS_THRESHOLD == 0)
-							UpdateProgress(OP_DOS, 100.0f*nb_blocks/total_blocks);
+							UpdateProgressWithInfo(OP_FILE_COPY, MSG_231, nb_blocks, total_blocks);
 					}
 				}
 			}
@@ -719,7 +769,7 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	} else {
 		uprintf("Extracting files...\n");
 		IGNORE_RETVAL(_chdirU(app_dir));
-		PrintInfo(0, MSG_231);
+//		PrintInfo(0, MSG_231);
 		if (total_blocks == 0) {
 			uprintf("Error: ISO has not been properly scanned.\n");
 			FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_ISO_SCAN);
@@ -738,7 +788,7 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	p_udf_root = udf_get_root(p_udf, true, 0);
 	if (p_udf_root == NULL) {
 		uprintf("%sCould not locate UDF root directory", spacing);
-		goto out;
+		goto try_iso;
 	}
 	if (scan_only) {
 		if (udf_get_logical_volume_id(p_udf, img_report.label, sizeof(img_report.label)) <= 0)
@@ -958,7 +1008,7 @@ out:
 						fprintf(fd, "  APPEND %s/\n", img_report.cfg_path);
 						img_report.cfg_path[i] = '/';
 					}
-					uprintf("Created: %s", path);
+					uprintf("Created: %s → %s", path, img_report.cfg_path);
 				}
 			}
 			if (fd != NULL)

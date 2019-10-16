@@ -372,7 +372,6 @@ out:
 /*
  * Parse a locale section in a localization file (UTF-8, no BOM)
  * NB: this call is reentrant for the "base" command support
- * TODO: Working on memory rather than on file would improve performance
  */
 BOOL get_loc_data_file(const char* filename, loc_cmd* lcmd)
 {
@@ -782,13 +781,15 @@ char* set_token_data_file(const char* token, const char* data, const char* filen
 		fputws(buf, fd_out);
 
 		// Now output the new data
-		fwprintf(fd_out, L"%s\n", wdata);
+		// coverity[invalid_type]
+		fwprintf_s(fd_out, L"%s\n", wdata);
 		ret = (char*)data;
 	}
 
 	if (ret == NULL) {
 		// Didn't find an existing token => append it
-		fwprintf(fd_out, L"%s = %s\n", wtoken, wdata);
+		// coverity[invalid_type]
+		fwprintf_s(fd_out, L"%s = %s\n", wtoken, wdata);
 		ret = (char*)data;
 	}
 
@@ -1039,7 +1040,8 @@ char* insert_section_data(const char* filename, const char* section, const char*
 		// Section was found, output it
 		fputws(buf, fd_out);
 		// Now output the new data
-		fwprintf(fd_out, L"%s\n", wdata);
+		// coverity[invalid_type]
+		fwprintf_s(fd_out, L"%s\n", wdata);
 		ret = (char*)data;
 	}
 
@@ -1083,6 +1085,7 @@ out:
  * it with 'rep'. File can be ANSI or UNICODE and is overwritten. Parameters are UTF-8.
  * The parsed line is of the form: [ ]token[ ]data
  * Returns a pointer to rep if replacement occurred, NULL otherwise
+ * TODO: We might have to end up with a regexp engine, so that we can do stuff like: "foo*" -> "bar\1"
  */
 char* replace_in_token_data(const char* filename, const char* token, const char* src, const char* rep, BOOL dos2unix)
 {
@@ -1090,7 +1093,7 @@ char* replace_in_token_data(const char* filename, const char* token, const char*
 	wchar_t *wtoken = NULL, *wfilename = NULL, *wtmpname = NULL, *wsrc = NULL, *wrep = NULL, bom = 0;
 	wchar_t buf[1024], *torep;
 	FILE *fd_in = NULL, *fd_out = NULL;
-	size_t i, size;
+	size_t i, ns, size;
 	int mode = 0;
 	char *ret = NULL, tmp[2];
 
@@ -1180,8 +1183,11 @@ char* replace_in_token_data(const char* filename, const char* token, const char*
 		// Token was found, move past token
 		i += wcslen(wtoken);
 
-		// Skip spaces
-		i += wcsspn(&buf[i], wspace);
+		// Skip whitespaces after token (while making sure there's at least one)
+		ns = wcsspn(&buf[i], wspace);
+		if (ns == 0)
+			continue;
+		i += ns;
 
 		torep = wcsstr(&buf[i], wsrc);
 		if (torep == NULL) {
@@ -1191,7 +1197,8 @@ char* replace_in_token_data(const char* filename, const char* token, const char*
 
 		i = (torep-buf) + wcslen(wsrc);
 		*torep = 0;
-		fwprintf(fd_out, L"%s%s%s", buf, wrep, &buf[i]);
+		// coverity[invalid_type]
+		fwprintf_s(fd_out, L"%s%s%s", buf, wrep, &buf[i]);
 		ret = (char*)rep;
 	}
 
