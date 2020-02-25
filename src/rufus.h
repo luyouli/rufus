@@ -111,6 +111,7 @@
 #define WPPRECORDER_MORE_INFO_URL   "https://github.com/pbatard/rufus/wiki/FAQ#BSODs_with_Windows_To_Go_drives_created_from_Windows_10_1809_ISOs"
 #define SEVENZIP_URL                "https://www.7-zip.org"
 #define FILES_DIR                   "rufus_files"
+#define IS_POWER_OF_2(x)            ((x != 0) && (((x) & ((x) - 1)) == 0))
 #define IGNORE_RETVAL(expr)         do { (void)(expr); } while(0)
 #ifndef ARRAYSIZE
 #define ARRAYSIZE(A)                (sizeof(A)/sizeof((A)[0]))
@@ -312,6 +313,8 @@ enum checksum_type {
 #define HAS_WINTOGO(r)      (HAS_BOOTMGR(r) && IS_EFI_BOOTABLE(r) && HAS_WININST(r))
 #define HAS_PERSISTENCE(r)  ((HAS_SYSLINUX(r) || HAS_GRUB(r)) && !(HAS_WINDOWS(r) || HAS_REACTOS(r) || HAS_KOLIBRIOS(r)))
 #define IS_FAT(fs)          ((fs_type == FS_FAT16) || (fs_type == FS_FAT32))
+#define SYMLINKS_RR         0x01
+#define SYMLINKS_UDF        0x02
 
 typedef struct {
 	char label[192];					// 3*64 to account for UTF-8
@@ -331,9 +334,9 @@ typedef struct {
 	uint16_t winpe;
 	uint8_t has_efi;
 	uint8_t wininst_index;
+	uint8_t has_symlinks;
 	BOOLEAN has_4GB_file;
 	BOOLEAN has_long_filename;
-	BOOLEAN has_symlinks;
 	BOOLEAN has_bootmgr;
 	BOOLEAN has_bootmgr_efi;
 	BOOLEAN has_autorun;
@@ -574,6 +577,9 @@ extern BOOL EnablePrivileges(void);
 extern void FlashTaskbar(HANDLE handle);
 extern DWORD WaitForSingleObjectWithMessages(HANDLE hHandle, DWORD dwMilliseconds);
 extern HICON CreateMirroredIcon(HICON hiconOrg);
+extern HANDLE CreatePreallocatedFile(const char* lpFileName, DWORD dwDesiredAccess,
+	DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
+	DWORD dwFlagsAndAttributes, LONGLONG fileSize);
 #define GetTextWidth(hDlg, id) GetTextSize(GetDlgItem(hDlg, id), NULL).cx
 
 DWORD WINAPI FormatThread(void* param);
@@ -646,6 +652,8 @@ static __inline HMODULE GetLibraryHandle(char* szLibraryName) {
 #define PF_INIT_OR_OUT(proc, name)			do {PF_INIT(proc, name);         \
 	if (pf##proc == NULL) {uprintf("Unable to locate %s() in %s.dll: %s\n",  \
 	#proc, #name, WindowsErrorString()); goto out;} } while(0)
+#define PF_INIT_OR_SET_STATUS(proc, name)	do {PF_INIT(proc, name);         \
+	if ((pf##proc == NULL) && (NT_SUCCESS(status))) status = STATUS_NOT_IMPLEMENTED; } while(0)
 
 /* Custom application errors */
 #define FAC(f)                         (f<<16)
@@ -663,3 +671,4 @@ static __inline HMODULE GetLibraryHandle(char* szLibraryName) {
 #define ERROR_CANT_ASSIGN_LETTER       0x120B
 #define ERROR_CANT_MOUNT_VOLUME        0x120C
 #define ERROR_BAD_SIGNATURE            0x120D
+#define ERROR_CANT_DOWNLOAD            0x120E

@@ -33,6 +33,7 @@
 #include <direct.h>
 #include <ctype.h>
 #include <virtdisk.h>
+#include <sys/stat.h>
 
 #include <cdio/cdio.h>
 #include <cdio/logging.h>
@@ -51,6 +52,10 @@
 #define PROGRESS_THRESHOLD        128
 #define FOUR_GIGABYTES            4294967296LL
 
+// Needed for UDF symbolic link testing
+#define S_IFLNK                   0xA000
+#define S_ISLNK(m)                (((m) & S_IFMT) == S_IFLNK)
+
 // Needed for UDF ISO access
 CdIo_t* cdio_open (const char* psz_source, driver_id_t driver_id) {return NULL;}
 void cdio_destroy (CdIo_t* p_cdio) {}
@@ -68,7 +73,7 @@ typedef struct {
 
 RUFUS_IMG_REPORT img_report;
 int64_t iso_blocking_status = -1;
-extern BOOL preserve_timestamps;
+extern BOOL preserve_timestamps, enable_ntfs_compression;
 BOOL enable_iso = TRUE, enable_joliet = TRUE, enable_rockridge = TRUE, has_ldlinux_c32;
 #define ISO_BLOCKING(x) do {x; iso_blocking_status++; } while(0)
 static const char* psz_extract_dir;
@@ -280,11 +285,9 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 		}
 		if (file_length >= FOUR_GIGABYTES)
 			img_report.has_4GB_file = TRUE;
-		// Compute projected size needed
-		total_blocks += file_length / ISO_BLOCKSIZE;
-		// NB: ISO_BLOCKSIZE = UDF_BLOCKSIZE
-		if ((file_length != 0) && (file_length % ISO_BLOCKSIZE != 0))
-			total_blocks++;
+		// Compute projected size needed (NB: ISO_BLOCKSIZE = UDF_BLOCKSIZE)
+		if (file_length != 0)
+			total_blocks += (file_length + (ISO_BLOCKSIZE - 1)) / ISO_BLOCKSIZE;
 		return TRUE;
 	}
 	return FALSE;
@@ -419,15 +422,6 @@ static void __inline set_directory_timestamp(char* path, LPFILETIME creation, LP
 	safe_closehandle(dir_handle);
 }
 
-// Preallocates the target size of a newly created file in order to prevent fragmentation from repeated writes
-static void __inline preallocate_filesize(HANDLE hFile, int64_t file_length)
-{
-	SetFileInformationByHandle(hFile, FileEndOfFileInfo, &file_length, sizeof(file_length));
-
-	// FileAllocationInfo does not require the size to be a multiple of the cluster size; the FS driver takes care of this.
-	SetFileInformationByHandle(hFile, FileAllocationInfo, &file_length, sizeof(file_length));
-}
-
 // Returns 0 on success, nonzero on error
 static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const char *psz_path)
 {
@@ -463,6 +457,8 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 		if (length < 0) {
 			goto out;
 		}
+		if (S_ISLNK(udf_get_posix_filemode(p_udf_dirent)))
+			img_report.has_symlinks = SYMLINKS_UDF;
 		if (udf_is_dir(p_udf_dirent)) {
 			if (!scan_only) {
 				psz_sanpath = sanitize_filename(psz_fullpath, &is_identical);
@@ -500,8 +496,8 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 			psz_sanpath = sanitize_filename(psz_fullpath, &is_identical);
 			if (!is_identical)
 				uprintf("  File name sanitized to '%s'", psz_sanpath);
-			file_handle = CreateFileU(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
-				FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+			file_handle = CreatePreallocatedFile(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
+				FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, file_length);
 			if (file_handle == INVALID_HANDLE_VALUE) {
 				err = GetLastError();
 				uprintf("  Unable to create file: %s", WindowsErrorString());
@@ -510,7 +506,6 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 				else
 					goto out;
 			} else {
-				preallocate_filesize(file_handle, file_length);
 				while (file_length > 0) {
 					if (FormatStatus) goto out;
 					memset(buf, 0, UDF_BLOCKSIZE);
@@ -608,7 +603,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			// a generic list that's unaware of RR extensions is being used, so we prevent that memleak ourselves
 			is_symlink = (p_statbuf->rr.psz_symlink != NULL);
 			if (is_symlink)
-				img_report.has_symlinks = TRUE;
+				img_report.has_symlinks = SYMLINKS_RR;
 			if (scan_only)
 				safe_free(p_statbuf->rr.psz_symlink);
 		} else {
@@ -652,8 +647,8 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 					uprintf("  Ignoring Rock Ridge symbolic link to '%s'", p_statbuf->rr.psz_symlink);
 				safe_free(p_statbuf->rr.psz_symlink);
 			}
-			file_handle = CreateFileU(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
-				FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+			file_handle = CreatePreallocatedFile(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
+				FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, file_length);
 			if (file_handle == INVALID_HANDLE_VALUE) {
 				err = GetLastError();
 				uprintf("  Unable to create file: %s", WindowsErrorString());
@@ -662,7 +657,6 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 				else
 					goto out;
 			} else {
-				preallocate_filesize(file_handle, file_length);
 				for (j=0; j<p_statbuf->extents; j++) {
 					extent_length = p_statbuf->extsize[j];
 					for (i=0; extent_length>0; i++) {
@@ -769,7 +763,6 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	} else {
 		uprintf("Extracting files...\n");
 		IGNORE_RETVAL(_chdirU(app_dir));
-//		PrintInfo(0, MSG_231);
 		if (total_blocks == 0) {
 			uprintf("Error: ISO has not been properly scanned.\n");
 			FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|APPERR(ERROR_ISO_SCAN);
@@ -803,7 +796,8 @@ try_iso:
 	// Perform our first scan with Joliet disabled (if Rock Ridge is enabled), so that we can find if
 	// there exists a Rock Ridge file with a name > 64 chars or if there are symlinks. If that is the
 	// case then we also disable Joliet during the extract phase.
-	if ((!enable_joliet) || (enable_rockridge && (scan_only || img_report.has_long_filename || img_report.has_symlinks))) {
+	if ((!enable_joliet) || (enable_rockridge && (scan_only || img_report.has_long_filename ||
+		(img_report.has_symlinks == SYMLINKS_RR)))) {
 		iso_extension_mask &= ~ISO_EXTENSION_JOLIET;
 	}
 	if (!enable_rockridge) {
@@ -1013,6 +1007,9 @@ out:
 			}
 			if (fd != NULL)
 				fclose(fd);
+		} else if (HAS_BOOTMGR(img_report) && enable_ntfs_compression) {
+			// bootmgr might need to be uncompressed: https://github.com/pbatard/rufus/issues/1381
+			RunCommand("compact /u bootmgr* efi/boot/*.efi", dest_dir, TRUE);
 		}
 	}
 	if (p_iso != NULL)

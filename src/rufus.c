@@ -1,6 +1,6 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
- * Copyright © 2011-2019 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2020 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -49,6 +49,13 @@
 #include "bled/bled.h"
 #include "../res/grub/grub_version.h"
 #include "../res/grub2/grub2_version.h"
+
+enum bootcheck_return {
+	BOOTCHECK_PROCEED = 0,
+	BOOTCHECK_CANCEL = -1,
+	BOOTCHECK_DOWNLOAD_ERROR = -2,
+	BOOTCHECK_GENERAL_ERROR = -3,
+};
 
 static const char* cmdline_hogger = "rufus.com";
 static const char* ep_reg = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
@@ -183,6 +190,7 @@ static void SetAllowedFileSystems(void)
 		break;
 	case BT_UEFI_NTFS:
 		allowed_filesystem[FS_NTFS] = TRUE;
+		allowed_filesystem[FS_EXFAT] = TRUE;
 		break;
 	}
 
@@ -770,9 +778,11 @@ static void EnableBootOptions(BOOL enable, BOOL remove_checkboxes)
 {
 	BOOL actual_enable_bb, actual_enable = enable;
 
-	// If no device is selected, don't enable anything
-	if (ComboBox_GetCurSel(hDeviceList) < 0)
+	// If no device is selected, don't enable anything and also don't remove the checkboxes
+	if (ComboBox_GetCurSel(hDeviceList) < 0) {
 		actual_enable = FALSE;
+		remove_checkboxes = FALSE;
+	}
 	// If boot selection is set to image, but no image is currently selected, don't enable anything
 	if ((boot_type == BT_IMAGE) && (image_path == NULL))
 		actual_enable = FALSE;
@@ -1065,8 +1075,12 @@ static void DisplayISOProps(void)
 			(img_report.wininst_version >> 16) & 0xff, (img_report.wininst_version >> 8) & 0xff,
 			(img_report.wininst_version >= SPECIAL_WIM_VERSION) ? "+": "");
 	}
-	PRINT_ISO_PROP(img_report.has_symlinks, "  Note: This ISO uses symbolic links, which will not be replicated due to file system limitations.");
-	PRINT_ISO_PROP(img_report.has_symlinks, "  Because of this, some features from this image may not work...");
+	PRINT_ISO_PROP(img_report.has_symlinks,
+		"  Note: This ISO uses symbolic links, which will not be replicated due to file system limitations.");
+	PRINT_ISO_PROP((img_report.has_symlinks == SYMLINKS_RR),
+		"  Because of this, some features from this image may not work...");
+	PRINT_ISO_PROP((img_report.has_symlinks == SYMLINKS_UDF),
+		"  Because of this, the size required for the target media may be much larger than size of the ISO...");
 }
 
 // Insert the image name into the Boot selection dropdown
@@ -1184,7 +1198,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 	int i, r;
 	FILE *fd;
 	DWORD len;
-	WPARAM ret = -1;
+	WPARAM ret = BOOTCHECK_CANCEL;
 	BOOL in_files_dir = FALSE;
 	const char* grub = "grub";
 	const char* core_img = "core.img";
@@ -1201,7 +1215,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 
 	if ((zero_drive) || (boot_type == BT_NON_BOOTABLE)) {
 		// Nothing to check
-		ret = 0;
+		ret = BOOTCHECK_PROCEED;
 		goto out;
 	}
 
@@ -1216,7 +1230,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 		}
 		if (IS_DD_BOOTABLE(img_report) && !img_report.is_iso) {
 			// Pure DD images are fine at this stage
-			ret = 0;
+			ret = BOOTCHECK_PROCEED;
 			goto out;
 		}
 		if ((image_options & IMOP_WINTOGO) && (ComboBox_GetCurSel(GetDlgItem(hMainDialog, IDC_IMAGE_OPTION)) == 1)) {
@@ -1374,6 +1388,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 								len = DownloadSignedFile(tmp, &tmp[sizeof(FILES_URL)], hMainDialog, TRUE);
 								if (len == 0) {
 									uprintf("Could not download file - cancelling");
+									ret = BOOTCHECK_DOWNLOAD_ERROR;
 									goto out;
 								}
 								use_own_c32[i] = TRUE;
@@ -1441,6 +1456,7 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 								uprintf("Could not download the file - will try to use embedded %s version instead", img_report.sl_version_str);
 							} else {
 								uprintf("Could not download the file - cancelling");
+								ret = BOOTCHECK_DOWNLOAD_ERROR;
 								goto out;
 							}
 						}
@@ -1469,8 +1485,10 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 				static_sprintf(tmp, "%s-%s", syslinux, embedded_sl_version_str[1]);
 				IGNORE_RETVAL(_mkdir(tmp));
 				static_sprintf(tmp, "%s/%s-%s/%s.%s", FILES_URL, syslinux, embedded_sl_version_str[1], ldlinux, ldlinux_ext[2]);
-				if (DownloadSignedFile(tmp, &tmp[sizeof(FILES_URL)], hMainDialog, TRUE) == 0)
+				if (DownloadSignedFile(tmp, &tmp[sizeof(FILES_URL)], hMainDialog, TRUE) == 0) {
+					ret = BOOTCHECK_DOWNLOAD_ERROR;
 					goto out;
+				}
 			}
 		}
 	} else if (boot_type == BT_MSDOS) {
@@ -1499,8 +1517,10 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 				static_sprintf(tmp, "grub4dos-%s", GRUB4DOS_VERSION);
 				IGNORE_RETVAL(_mkdir(tmp));
 				static_sprintf(tmp, "%s/grub4dos-%s/grldr", FILES_URL, GRUB4DOS_VERSION);
-				if (DownloadSignedFile(tmp, &tmp[sizeof(FILES_URL)], hMainDialog, TRUE) == 0)
+				if (DownloadSignedFile(tmp, &tmp[sizeof(FILES_URL)], hMainDialog, TRUE) == 0) {
+					ret = BOOTCHECK_DOWNLOAD_ERROR;
 					goto out;
+				}
 			}
 		}
 	}
@@ -1508,12 +1528,12 @@ static DWORD WINAPI BootCheckThread(LPVOID param)
 uefi_target:
 	if (boot_type == BT_UEFI_NTFS) {
 		fs_type = (int)ComboBox_GetItemData(hFileSystem, ComboBox_GetCurSel(hFileSystem));
-		if (fs_type != FS_NTFS) {
+		if (fs_type != FS_NTFS && fs_type != FS_EXFAT) {
 			MessageBoxExU(hMainDialog, lmprintf(MSG_097, "UEFI:NTFS"), lmprintf(MSG_092), MB_OK|MB_ICONERROR|MB_IS_RTL, selected_langid);
 			goto out;
 		}
 	}
-	ret = 0;
+	ret = BOOTCHECK_PROCEED;
 
 out:
 	PostMessage(hMainDialog, UM_FORMAT_START, ret, 0);
@@ -1613,6 +1633,7 @@ static void InitDialog(HWND hDlg)
 	uprintf(APPLICATION_NAME " " APPLICATION_ARCH " v%d.%d.%d%s%s", rufus_version[0], rufus_version[1], rufus_version[2],
 		IsAlphaOrBeta(), (ini_file != NULL)?"(Portable)":"");
 	for (i=0; i<ARRAYSIZE(resource); i++) {
+		len = 0;
 		buf = (char*)GetResource(hMainInstance, resource[i], _RT_RCDATA, "ldlinux_sys", &len, TRUE);
 		if (buf == NULL) {
 			uprintf("Warning: could not read embedded Syslinux v%d version", i+4);
@@ -2621,8 +2642,10 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		break;
 
 	case UM_FORMAT_START:
-		if (wParam != 0)
+		if (wParam != BOOTCHECK_PROCEED)
 			goto aborted_start;
+		// All subsequent aborts below translate to a user cancellation
+		wParam = BOOTCHECK_CANCEL;
 
 		if ((partition_type == PARTITION_STYLE_MBR) && (SelectedDrive.DiskSize > 2 * TB)) {
 			if (MessageBoxExU(hMainDialog, lmprintf(MSG_134, SizeToHumanReadable(SelectedDrive.DiskSize - 2 * TB, FALSE, FALSE)),
@@ -2698,14 +2721,19 @@ static INT_PTR CALLBACK MainCallback(HWND hDlg, UINT message, WPARAM wParam, LPA
 		if (format_thid != NULL)
 			break;
 	aborted_start:
-		EnableControls(TRUE, FALSE);
 		zero_drive = FALSE;
 		if (queued_hotplug_event)
 			SendMessage(hDlg, UM_MEDIA_CHANGE, 0, 0);
-		EnableWindow(GetDlgItem(hDlg, IDCANCEL), TRUE);
-		break;
+		if (wParam == BOOTCHECK_CANCEL) {
+			EnableControls(TRUE, FALSE);
+			break;
+		}
+		FormatStatus = ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) |
+			((wParam == BOOTCHECK_DOWNLOAD_ERROR) ? APPERR(ERROR_CANT_DOWNLOAD) : ERROR_GEN_FAILURE);
+		// Fall through
 
 	case UM_FORMAT_COMPLETED:
+		zero_drive = FALSE;
 		format_thid = NULL;
 		// Stop the timer
 		KillTimer(hMainDialog, TID_APP_TIMER);

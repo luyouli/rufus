@@ -9,11 +9,13 @@ Rufus: The Reliable USB Formatting Utility
 
 ![Rufus logo](https://raw.githubusercontent.com/pbatard/rufus/master/res/icons/rufus-128.png)
 
+Rufus is a utility that helps format and create bootable USB flash drives.
+
 Features
 --------
 
 * Format USB, flash card and virtual drives to FAT/FAT32/NTFS/UDF/exFAT/ReFS/ext2/ext3
-* Create DOS bootable USB drives, using [FreeDOS](http://www.freedos.org) or MS-DOS (Windows 8.1 or earlier)
+* Create DOS bootable USB drives, using [FreeDOS](https://www.freedos.org) or MS-DOS (Windows 8.1 or earlier)
 * Create BIOS or UEFI bootable drives, including [UEFI bootable NTFS](https://github.com/pbatard/uefi-ntfs)
 * Create bootable drives from bootable ISOs (Windows, Linux, etc.)
 * Create bootable drives from bootable disk images, including compressed ones
@@ -35,9 +37,9 @@ Use either Visual Studio 2019 (version 16.0 or later with SDK 10.0.18362 install
 then invoke the `.sln` or `configure`/`make` respectively.
 
 #### Visual Studio
-Note that, since Rufus is an OSI compliant Open Source project, you are entitled to
+Rufus is an OSI compliant Open Source project. You are entitled to
 download and use the *freely available* [Visual Studio Community Edition](https://www.visualstudio.com/vs/community/)
-to build, run or develop for Rufus. As per the Visual Studio Community Edition license
+to build, run or develop for Rufus. As per the Visual Studio Community Edition license,
 this applies regardless of whether you are an individual or a corporate user.
 
 Additional information
